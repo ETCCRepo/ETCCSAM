@@ -2226,7 +2226,7 @@ if ($action === 'login') {
         } else {
             $backupDir = __DIR__ . '/backups';
             $fileName = (string)($target['fileName'] ?? '');
-            if ($fileName !== '' && preg_match('/^backup_[0-9\-_]+\.sql(\.gz)?$/', $fileName)) {
+            if ($fileName !== '' && preg_match('/^backup_[0-9\-_]+\.(zip|sql(\.gz)?)$/', $fileName)) {
                 $path = $backupDir . '/' . $fileName;
                 if (is_file($path)) {
                     if (samBackupFileCount($backupDir) <= 1) {
@@ -2258,7 +2258,7 @@ if ($action === 'login') {
     $name = (string)($input['name'] ?? '');
     $backupDir = __DIR__ . '/backups';
     $path = $backupDir . '/' . $name;
-    if (!preg_match('/^backup_[0-9\-_]+\.sql(\.gz)?$/', $name) || !is_file($path)) {
+    if (!preg_match('/^backup_[0-9\-_]+\.(zip|sql(\.gz)?)$/', $name) || !is_file($path)) {
         http_response_code(404);
         echo json_encode(['success' => false, 'error' => 'Backup file not found — it may have aged past the retention limit (newest ' . SAM_BACKUP_KEEP . ' kept).']);
         exit;

@@ -649,7 +649,8 @@ function createDatabaseBackup($pdo, $backupDir, $dbName) {
         }
 
         $backupFile = $backupDir . '/backup_' . date('Y-m-d_H-i-s') . '.sql';
-        $gzFile = $backupFile . '.gz';
+        $zipFile = $backupDir . '/backup_' . date('Y-m-d_H-i-s') . '.zip';
+        $gzFile = $backupFile . '.gz'; // fallback only, if ZipArchive isn't available
 
         // SECURITY: Avoid shell_exec() (command injection risk). Use PHP-based backup instead.
         // This is safer and more portable across hosting environments.
@@ -684,7 +685,38 @@ function createDatabaseBackup($pdo, $backupDir, $dbName) {
         }
         chmod($backupFile, 0600); // Owner read/write only
 
-        // Compress using PHP gzcompress (no shell commands)
+        // Package as a real .zip (a user-facing requirement — the previous
+        // gzcompress()'d ".gz" file wasn't a zip archive at all, just raw
+        // zlib-compressed bytes with a misleading extension; some tools/OSes
+        // couldn't open it as either a .gz or a .zip). ZipArchive ships with
+        // PHP's zip extension, which is present on this host; no shell_exec
+        // involved, same "no shell commands" constraint as before.
+        if (class_exists('ZipArchive')) {
+            $zip = new ZipArchive();
+            if ($zip->open($zipFile, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+                throw new Exception("Failed to create zip archive: $zipFile");
+            }
+            $zip->addFile($backupFile, basename($backupFile));
+            $zip->close();
+            chmod($zipFile, 0600); // Owner read/write only
+
+            // Clean up uncompressed file now that it's inside the zip
+            @unlink($backupFile);
+
+            if (file_exists($zipFile)) {
+                samBackupPurge($backupDir, SAM_BACKUP_KEEP);
+                return [
+                    'success' => true,
+                    'file' => $zipFile,
+                    'size' => filesize($zipFile),
+                    'timestamp' => date('Y-m-d H:i:s')
+                ];
+            }
+            return ['success' => false, 'error' => 'Zip archive not created'];
+        }
+
+        // Fallback for a host without the zip extension — old .sql.gz behavior,
+        // kept only so a backup still succeeds rather than hard-failing.
         $compressed = gzcompress($sqlDump, 9);
         if ($compressed === false) {
             throw new Exception("Failed to compress backup");
@@ -734,7 +766,7 @@ function listBackups($backupDir) {
         return $backups;
     }
 
-    $files = glob($backupDir . '/backup_*.sql*');
+    $files = samAllBackupFiles($backupDir);
 
     foreach ($files as $file) {
         $backups[] = [
@@ -789,12 +821,23 @@ function listBackups($backupDir) {
 // regardless, so a purged file's record isn't lost, only the file itself.
 define('SAM_BACKUP_KEEP', 30);
 
-// Deletes the oldest backup_*.sql* files beyond $keep, oldest first.
+// Every backup file currently on disk, any format. .zip is the current
+// format (see createDatabaseBackup()); .sql/.sql.gz are matched too so
+// backups created before that format change still show up, are counted
+// toward retention, and remain downloadable/deletable.
+function samAllBackupFiles($backupDir) {
+    return array_merge(
+        glob($backupDir . '/backup_*.zip') ?: [],
+        glob($backupDir . '/backup_*.sql*') ?: []
+    );
+}
+
+// Deletes the oldest backup files (any format) beyond $keep, oldest first.
 // max(1, ...) is a floor: the newest backup is never deleted by this
 // function, so a misconfigured $keep of 0 can't leave zero backups on disk.
 function samBackupPurge($backupDir, $keep) {
     $keep = max(1, (int)$keep);
-    $files = glob($backupDir . '/backup_*.sql*') ?: [];
+    $files = samAllBackupFiles($backupDir);
     if (count($files) <= $keep) return;
     usort($files, function($a, $b) { return filemtime($a) - filemtime($b); });
     foreach (array_slice($files, 0, count($files) - $keep) as $f) @unlink($f);
@@ -804,7 +847,7 @@ function samBackupPurge($backupDir, $keep) {
 // action in api.php to refuse deleting the very last one, same guarantee
 // samBackupPurge()'s max(1, ...) floor gives the automatic purge.
 function samBackupFileCount($backupDir) {
-    return count(glob($backupDir . '/backup_*.sql*') ?: []);
+    return count(samAllBackupFiles($backupDir));
 }
 
 // Reads the permanent history log (every attempt, success or failure) from

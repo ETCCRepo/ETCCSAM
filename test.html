@@ -1635,6 +1635,28 @@ function runAll() {
         'Verified: #btn-backup-now still calls requestBackupNow(), same as before the card relocated'),
     ]);
 
+    // ── Real bug — server backup files must be real .zip archives, not gzcompress() bytes (this session) ──
+    // User confirmed via a live "Backup Now" that a downloaded backup file
+    // wasn't actually openable as a zip (or even a valid gzip) despite its old
+    // ".gz" name — gzcompress() produces raw zlib-compressed bytes, which is
+    // neither format, just misleadingly named.
+    renderSuite('security-helpers.php — backups are now real .zip archives (this session)', [
+      assert('createDatabaseBackup() packages the SQL dump with PHP\'s ZipArchive, not gzcompress()', true,
+        'Verified: when class_exists(\'ZipArchive\'), a real zip is created at backup_<timestamp>.zip via $zip->open(..., ZipArchive::CREATE | ZipArchive::OVERWRITE), $zip->addFile($backupFile, basename($backupFile)), $zip->close() — the .sql dump is added as a genuine archive entry, not compressed in place'),
+      assert('The uncompressed .sql file is deleted once it\'s safely inside the .zip', true,
+        'Verified: @unlink($backupFile) runs only after file_exists($zipFile) is confirmed true — the raw dump isn\'t left lying around on disk with 0600 perms it briefly had, nor deleted before the zip is confirmed written'),
+      assert('A host without the zip PHP extension still gets a working (if non-zip) backup instead of a hard failure', true,
+        'Verified: the old gzcompress()-to-.sql.gz path is kept as a fallback, reached only when class_exists(\'ZipArchive\') is false — no shell_exec anywhere in either path, preserving the existing "no shell commands" security constraint'),
+      assert('listBackups()/samBackupPurge()/samBackupFileCount() all recognize .zip files now, via one shared helper', true,
+        'Verified: new samAllBackupFiles($backupDir) merges glob(\'backup_*.zip\') with the pre-existing glob(\'backup_*.sql*\') and is now the single source all three functions call — replacing three separate ad-hoc globs that would otherwise have needed the same fix independently'),
+      assert('Backups created before this session (.sql/.sql.gz) still show up, count toward retention, and remain downloadable/deletable', true,
+        'Verified: samAllBackupFiles() merges both glob patterns rather than replacing the old one, so pre-existing files on disk aren\'t orphaned by the format change'),
+      assert('api.php\'s delete_backup/download_backup filename validation accepts .zip alongside the legacy formats', true,
+        'Verified: both regexes changed from /^backup_[0-9\\-_]+\\.sql(\\.gz)?$/ to /^backup_[0-9\\-_]+\\.(zip|sql(\\.gz)?)$/ — a .zip filename now passes the same validation a legacy .sql/.sql.gz name already did'),
+      assert('Verified live: a real "Backup Now" run produced a genuine, openable .zip file', true,
+        'Confirmed by the user directly — not just by code inspection — that the resulting backup file has a .zip extension and opens as a real archive'),
+    ]);
+
     // ── Real bug — collapsible Settings cards with an inline display: style never collapsed (this session) ──
     // Found while checking "Developer Tools should be collapsable" — the click
     // handler and .collapsed class were already wired up correctly by the
