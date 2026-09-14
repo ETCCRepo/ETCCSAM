@@ -188,6 +188,8 @@ if ($action === 'health') {
 $allowedActions = [
     'login',
     'logout',
+    'verify_settings_password',
+    'set_password',
     'forgot_password',
     'reset_password',
     'get_all',
@@ -232,6 +234,12 @@ $allowedActions = [
     'get_audit_log',
     'create_backup',
     'list_backups',
+    'get_backup_history',
+    'delete_backup',
+    'download_backup',
+    'get_backup_schedule',
+    'save_backup_schedule',
+    'send_email',
     // Phase 3 validation actions
     'validate_payment',
     'validate_category',
@@ -290,7 +298,7 @@ if (!in_array($action, $publicActions, true)) {
     // actions confirmed to go through that helper, rather than every
     // authenticated request, so a fetch() call site missed in this audit can't
     // silently break the live app.
-    $csrfProtectedActions = ['save_settings', 'delete_auction', 'clear_all', 'clear_data', 'clear_auctions'];
+    $csrfProtectedActions = ['save_settings', 'set_password', 'delete_auction', 'clear_all', 'clear_data', 'clear_auctions', 'delete_backup', 'save_backup_schedule'];
     if (in_array($action, $csrfProtectedActions, true)) {
         $sentToken = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
         if (empty($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $sentToken)) {
@@ -473,17 +481,22 @@ logQuery($action, 'START', 'REQUEST', "Action=$action");
 // Settings password guard (server-side backstop against lockouts)
 // ═════════════════════════════════════════════════════════════════════════════
 // The sam_settings blob is a FULL overwrite written by ~15 "Save Settings"
-// buttons and several load-time paths. A stale-tab / stale-localStorage write
-// used to blank or default-revert `password` / `settingsPassword`, repeatedly
-// locking staff out. The client-side saveSettings() now merges onto current
-// settings, but this is the durable server-side backstop: for each protected
-// field, keep the EXISTING stored value unless the incoming value is a genuine
-// change — non-empty, different from what's stored, and (for settingsPassword,
-// which has a known public default) not that default. Net effect: these two
-// fields can only ever be CHANGED to a real value; a settings save can never
-// drop, blank, or reset-to-default them. (Trade-off: you can't set
-// settingsPassword back TO the literal default 'Gladiator#1' — acceptable,
-// since that value is exactly the corruption signature we're guarding against.)
+// buttons, several load-time paths, and the localStorage auto-sync hook (which
+// re-posts sam_settings via 'set' on every local write, including boot-time
+// migrations that run BEFORE the tab pulls fresh data from the server).
+//
+// This guard used to allow a blob write to change a password as long as the
+// incoming value was non-empty, different, and not the 'Gladiator#1' default.
+// That still let any tab holding an OLDER real password (last synced before a
+// change on another device, or before a change in this same tab reached the
+// server) silently roll the stored password back — which is how the Developer
+// gate ended up rejecting both the old and the new settings password.
+//
+// Now strict: once a password field has a stored value, a settings blob write
+// can NEVER change it. The only ways to change a stored password are the
+// dedicated 'set_password' action (Settings > Security's Change Password
+// buttons) and 'reset_password' (emailed reset link). A blob write can still
+// supply the first-ever value when nothing is stored yet.
 function sam_guard_settings_passwords($incoming, PDO $pdo) {
     if (!is_array($incoming)) return $incoming;
     $existing = [];
@@ -493,16 +506,38 @@ function sam_guard_settings_passwords($incoming, PDO $pdo) {
     } catch (Exception $e) {
         return $incoming; // can't read existing — don't interfere
     }
-    // settingsPassword has a known hardcoded default; the login password does not.
-    $defaults = ['password' => null, 'settingsPassword' => 'Gladiator#1'];
-    foreach ($defaults as $field => $default) {
+    foreach (['password', 'settingsPassword'] as $field) {
         $exVal = isset($existing[$field]) ? (string)$existing[$field] : '';
         if ($exVal === '') continue; // nothing stored yet — allow the first-time set
-        $inVal = isset($incoming[$field]) ? (string)$incoming[$field] : '';
-        $isRealChange = ($inVal !== '') && ($inVal !== $exVal) && ($default === null || $inVal !== $default);
-        if (!$isRealChange) $incoming[$field] = $exVal; // preserve the stored value
+        $incoming[$field] = $exVal;  // stored value always wins over a blob write
     }
     return $incoming;
+}
+
+// Writes ONE password field into sam_settings, leaving every other key as
+// stored. Shared by 'set_password' and 'reset_password' — the only two paths
+// allowed to change a password that's already set (see guard above).
+function sam_write_settings_password(PDO $pdo, $field, $newPassword) {
+    $val = $pdo->query("SELECT `value` FROM sam_store WHERE `key` = 'sam_settings' LIMIT 1")->fetchColumn();
+    $settings = $val ? json_decode($val, true) : [];
+    if (!is_array($settings)) $settings = [];
+    $settings[$field] = $newPassword;
+    $stmt = $pdo->prepare(
+        "INSERT INTO sam_store (`key`, `value`) VALUES ('sam_settings', ?)
+         ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)"
+    );
+    $stmt->execute([json_encode($settings)]);
+}
+
+// Validates a new password for either field. Returns an error string, or ''
+// when it's acceptable. Any value is allowed, including the DEFAULT_SETTINGS
+// value — the old "not the default" rule only existed to spot stale-blob
+// corruption, which sam_guard_settings_passwords() now blocks outright, and it
+// stopped admins deliberately choosing that password.
+function sam_validate_new_password($field, $pw1, $pw2 = null) {
+    if (strlen($pw1) < 6) return 'Password must be at least 6 characters.';
+    if ($pw2 !== null && $pw1 !== $pw2) return 'Passwords do not match.';
+    return '';
 }
 
 if ($action === 'login') {
@@ -545,6 +580,10 @@ if ($action === 'login') {
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
         logQuery($action, 'LOGIN', 'SUCCESS', 'Authenticated');
         logSecurityEvent('LOGIN_SUCCESS', 'login', 'User authenticated successfully', 'INFO');
+        // Best-effort daily auto-backup check — see samBackupAutoCheck()'s own
+        // comment in security-helpers.php for why this is SAM's stand-in for
+        // a dedicated scheduled task. Never let a backup failure break login.
+        try { samBackupAutoCheck($pdo, __DIR__ . '/backups', $env['DB_NAME']); } catch (Exception $e) {}
         echo json_encode(['success' => true, 'csrf_token' => $_SESSION['csrf_token']]);
     } else {
         logQuery($action, 'LOGIN', 'FAIL', 'Bad password');
@@ -558,6 +597,76 @@ if ($action === 'login') {
     session_destroy();
     echo json_encode(['success' => true]);
 
+} elseif ($action === 'verify_settings_password') {
+    // Developer gate (the "Settings Password" prompt behind the hamburger's
+    // Developer row, Delete Auction, and deep links to developer screens).
+    // submitAuthPassword() used to compare against the browser's own
+    // localStorage copy of sam_settings — which can be stale (another device
+    // changed the password, a failed re-sync, or DEFAULT_SETTINGS filling in
+    // 'Gladiator#1' when the key was missing), so the OLD password kept
+    // working in one tab while the NEW one was rejected. The server's
+    // sam_settings row is the source of truth; check it here instead.
+    // Wrong password deliberately returns 403, never 401 — index.html's fetch
+    // wrapper treats any 401 from api.php as an expired session and silently
+    // re-logs-in and retries, which would double every failed attempt.
+    $entered = (string)($input['password'] ?? '');
+    $stored = '';
+    try {
+        $val = $pdo->query("SELECT `value` FROM sam_store WHERE `key` = 'sam_settings' LIMIT 1")->fetchColumn();
+        if ($val) {
+            $settings = json_decode($val, true);
+            if (is_array($settings) && !empty($settings['settingsPassword'])) $stored = (string)$settings['settingsPassword'];
+        }
+    } catch (Exception $e) {
+        logQuery($action, 'VERIFY_SETTINGS_PASSWORD', 'ERROR', $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'Could not read settings from the server.']);
+        exit;
+    }
+    // Nothing stored server-side yet: honor the same default the client's
+    // DEFAULT_SETTINGS uses, so a fresh install isn't locked out of Settings
+    // (where the password gets set). Once any real value is saved, only that
+    // value is accepted — sam_guard_settings_passwords() stops it ever being
+    // reverted to this default.
+    if ($stored === '') $stored = 'Gladiator#1';
+
+    if ($entered !== '' && hash_equals($stored, $entered)) {
+        logQuery($action, 'VERIFY_SETTINGS_PASSWORD', 'SUCCESS', 'Developer gate unlocked');
+        logSecurityEvent('SETTINGS_AUTH_SUCCESS', $action, 'Settings password verified', 'INFO');
+        echo json_encode(['success' => true]);
+    } else {
+        logQuery($action, 'VERIFY_SETTINGS_PASSWORD', 'FAIL', 'Bad settings password');
+        logSecurityEvent('SETTINGS_AUTH_FAILURE', $action, 'Invalid settings password provided', 'WARN');
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'Incorrect password']);
+    }
+
+} elseif ($action === 'set_password') {
+    // Settings > Security's two Change Password buttons. The only
+    // authenticated path allowed to change a password that's already stored —
+    // save_settings / set preserve both fields (sam_guard_settings_passwords).
+    $field = (string)($input['field'] ?? '');
+    $newPassword = (string)($input['password'] ?? '');
+    if (!in_array($field, ['password', 'settingsPassword'], true)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'Invalid password field.']);
+        exit;
+    }
+    $err = sam_validate_new_password($field, $newPassword);
+    if ($err !== '') {
+        echo json_encode(['success' => false, 'error' => $err]);
+        exit;
+    }
+    try {
+        sam_write_settings_password($pdo, $field, $newPassword);
+        logQuery($action, 'SET_PASSWORD', 'SUCCESS', "Field: $field");
+        logSecurityEvent('PASSWORD_CHANGED', $action, "Changed $field via Settings", 'INFO');
+        echo json_encode(['success' => true]);
+    } catch (Exception $e) {
+        logQuery($action, 'SET_PASSWORD', 'ERROR', $e->getMessage());
+        echo json_encode(['success' => false, 'error' => 'Could not save the new password — please try again.']);
+    }
+
 } elseif ($action === 'forgot_password') {
     // SAM has one shared password (no per-user accounts), so a self-service
     // reset with no identity check would just let anyone reset it. Instead
@@ -565,6 +674,13 @@ if ($action === 'login') {
     // address (RESET_ADMIN_EMAIL in .env) — whoever controls that inbox is
     // the person who should be able to reset the app password. Same pattern
     // as the Car Show app's forgot-password.php.
+    //
+    // scope 'settings' (from the Developer password prompt) resets
+    // settingsPassword instead of the login password. Each scope keeps its
+    // own token row, so requesting one kind of reset can't invalidate a
+    // pending link for the other.
+    $scope = (($input['scope'] ?? '') === 'settings') ? 'settings' : 'login';
+    $tokenKey = $scope === 'settings' ? 'sam_settings_password_reset' : 'sam_password_reset';
     $adminEmail = $env['RESET_ADMIN_EMAIL'] ?? '';
     if (empty($adminEmail)) {
         logQuery($action, 'FORGOT_PASSWORD', 'ERROR', 'RESET_ADMIN_EMAIL not configured');
@@ -576,26 +692,29 @@ if ($action === 'login') {
     $expiresAt = time() + 3600; // 1 hour
     try {
         $stmt = $pdo->prepare(
-            "INSERT INTO sam_store (`key`, `value`) VALUES ('sam_password_reset', ?)
+            "INSERT INTO sam_store (`key`, `value`) VALUES (?, ?)
              ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)"
         );
-        $stmt->execute([json_encode(['token' => $token, 'expiresAt' => $expiresAt])]);
+        $stmt->execute([$tokenKey, json_encode(['token' => $token, 'expiresAt' => $expiresAt])]);
     } catch (Exception $e) {
         logQuery($action, 'FORGOT_PASSWORD', 'ERROR', $e->getMessage());
         echo json_encode(['success' => false, 'error' => 'Could not start a password reset right now — please try again in a moment.']);
         exit;
     }
 
-    $resetUrl = 'https://etccapps.com/apps/sam/reset-password.html?token=' . $token;
-    $subject = 'Silent Auction Manager — password reset requested';
-    $body = "A password reset was requested for Silent Auction Manager's login.\n\n" .
+    $resetUrl = 'https://etccapps.com/apps/sam/reset-password.html?token=' . $token . ($scope === 'settings' ? '&scope=settings' : '');
+    $what = $scope === 'settings' ? 'Developer (Settings) password' : 'login';
+    $subject = $scope === 'settings'
+        ? 'Silent Auction Manager — Developer password reset requested'
+        : 'Silent Auction Manager — password reset requested';
+    $body = "A password reset was requested for Silent Auction Manager's $what.\n\n" .
         "Reset it here (link expires in 1 hour):\n" . $resetUrl . "\n\n" .
         "If you didn't request this, you can ignore this email — the link " .
         "expires on its own and nothing changes until someone opens it.";
 
     if (sam_send_mail($adminEmail, $subject, $body, $env)) {
-        logQuery($action, 'FORGOT_PASSWORD', 'SUCCESS', 'Reset email sent');
-        logSecurityEvent('PASSWORD_RESET_REQUESTED', $action, 'Reset link emailed to admin', 'INFO');
+        logQuery($action, 'FORGOT_PASSWORD', 'SUCCESS', "Reset email sent (scope: $scope)");
+        logSecurityEvent('PASSWORD_RESET_REQUESTED', $action, "Reset link emailed to admin (scope: $scope)", 'INFO');
         echo json_encode(['success' => true]);
     } else {
         logQuery($action, 'FORGOT_PASSWORD', 'ERROR', 'SMTP send failed');
@@ -608,13 +727,21 @@ if ($action === 'login') {
     // password field in sam_settings — preserving every other settings key
     // (a naive full overwrite would silently wipe unrelated settings, e.g.
     // startingBidPct/emailFolder). Token is deleted after one use.
+    // scope 'settings' validates against that scope's own token row and
+    // writes settingsPassword instead — a login-reset token can't be replayed
+    // to change the Developer password, or vice versa.
     $token = (string)($input['token'] ?? '');
     $pw1 = (string)($input['password'] ?? '');
     $pw2 = (string)($input['password2'] ?? '');
+    $scope = (($input['scope'] ?? '') === 'settings') ? 'settings' : 'login';
+    $tokenKey = $scope === 'settings' ? 'sam_settings_password_reset' : 'sam_password_reset';
+    $field = $scope === 'settings' ? 'settingsPassword' : 'password';
 
     $valid = false;
     try {
-        $val = $pdo->query("SELECT `value` FROM sam_store WHERE `key` = 'sam_password_reset' LIMIT 1")->fetchColumn();
+        $stmt = $pdo->prepare("SELECT `value` FROM sam_store WHERE `key` = ? LIMIT 1");
+        $stmt->execute([$tokenKey]);
+        $val = $stmt->fetchColumn();
         if ($val) {
             $reset = json_decode($val, true);
             $valid = isset($reset['token'], $reset['expiresAt']) &&
@@ -630,30 +757,19 @@ if ($action === 'login') {
         echo json_encode(['success' => false, 'error' => 'This reset link is invalid or has expired. Request a new one.']);
         exit;
     }
-    if (strlen($pw1) < 6) {
-        echo json_encode(['success' => false, 'error' => 'Password must be at least 6 characters.']);
-        exit;
-    }
-    if ($pw1 !== $pw2) {
-        echo json_encode(['success' => false, 'error' => 'Passwords do not match.']);
+    $err = sam_validate_new_password($field, $pw1, $pw2);
+    if ($err !== '') {
+        echo json_encode(['success' => false, 'error' => $err]);
         exit;
     }
 
     try {
-        $val = $pdo->query("SELECT `value` FROM sam_store WHERE `key` = 'sam_settings' LIMIT 1")->fetchColumn();
-        $settings = $val ? json_decode($val, true) : [];
-        if (!is_array($settings)) $settings = [];
-        $settings['password'] = $pw1;
+        sam_write_settings_password($pdo, $field, $pw1);
+        $stmt = $pdo->prepare("DELETE FROM sam_store WHERE `key` = ?");
+        $stmt->execute([$tokenKey]); // one-time use
 
-        $stmt = $pdo->prepare(
-            "INSERT INTO sam_store (`key`, `value`) VALUES ('sam_settings', ?)
-             ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)"
-        );
-        $stmt->execute([json_encode($settings)]);
-        $pdo->exec("DELETE FROM sam_store WHERE `key` = 'sam_password_reset'"); // one-time use
-
-        logQuery($action, 'RESET_PASSWORD', 'SUCCESS', 'Password reset via emailed link');
-        logSecurityEvent('PASSWORD_RESET_SUCCESS', $action, 'Password changed via reset link', 'INFO');
+        logQuery($action, 'RESET_PASSWORD', 'SUCCESS', "Password reset via emailed link (scope: $scope)");
+        logSecurityEvent('PASSWORD_RESET_SUCCESS', $action, "Password changed via reset link (scope: $scope)", 'INFO');
         echo json_encode(['success' => true]);
     } catch (Exception $e) {
         logQuery($action, 'RESET_PASSWORD', 'ERROR', $e->getMessage());
@@ -723,7 +839,11 @@ if ($action === 'login') {
         // Returns a flat key-value map { "sam_items": "...", ... } which the
         // client's syncFromKeyValueDB() iterates with Object.entries().
         // Do NOT paginate or wrap this — the client expects the flat shape.
-        $query = "SELECT `key`, `value` FROM sam_store";
+        // Password-reset token rows are excluded: they're server-only, and
+        // shipping them to every logged-in browser would let anyone with the
+        // login password consume a pending Developer-password reset link
+        // without access to the admin inbox it was emailed to.
+        $query = "SELECT `key`, `value` FROM sam_store WHERE `key` NOT IN ('sam_password_reset', 'sam_settings_password_reset')";
         $rows = $pdo->query($query)->fetchAll(PDO::FETCH_KEY_PAIR);
 
         logQuery($action, $query, 'SUCCESS', "Rows: " . count($rows));
@@ -2032,15 +2152,27 @@ if ($action === 'login') {
     }
 
 } elseif ($action === 'create_backup') {
-    // Requires authentication - already verified above
+    // Requires authentication - already verified above. This is the manual
+    // "Backup Now" button (Developer > Backups) — also appends a
+    // sam_backup_history entry (reason:'manual'), same log
+    // samBackupAutoCheck() writes to, so both trigger types show in one place.
     $userId = getAuthUserId();
 
     try {
         $backupDir = __DIR__ . '/backups';
         $result = createDatabaseBackup($pdo, $backupDir, $env['DB_NAME']);
 
+        $entry = ['timestamp' => gmdate('c'), 'status' => $result['success'] ? 'success' : 'failed', 'reason' => 'manual'];
+        if ($result['success']) {
+            $entry['fileName'] = basename($result['file']);
+            $entry['sizeBytes'] = $result['size'];
+        } else {
+            $entry['error'] = $result['error'];
+        }
+        samAppendBackupHistory($pdo, $entry);
+
         logAudit($pdo, $userId, 'create_backup', 'system', 'backup', null, $result, $result['success'] ? 'success' : 'failure', "Backup created: " . ($result['file'] ?? 'failed'));
-        echo json_encode($result);
+        echo json_encode(array_merge($result, ['entry' => $entry]));
     } catch (Exception $e) {
         logAudit($pdo, $userId, 'create_backup_error', 'system', 'backup', null, null, 'failure', $e->getMessage());
         echo json_encode(['success' => false, 'error' => $e->getMessage()]);
@@ -2061,6 +2193,130 @@ if ($action === 'login') {
     } catch (Exception $e) {
         logQuery($action, 'List backups', 'ERROR', $e->getMessage());
         echo json_encode(['error' => 'Failed to list backups: ' . $e->getMessage()]);
+    }
+
+} elseif ($action === 'get_backup_history') {
+    // Developer > Backups > "View Logs" — the permanent log of every attempt
+    // (manual or auto, success or failure), unlike list_backups above which
+    // only reflects files currently on disk.
+    try {
+        $history = samReadBackupHistory($pdo);
+        echo json_encode(['success' => true, 'history' => $history]);
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => 'Failed to load backup history: ' . $e->getMessage()]);
+    }
+
+} elseif ($action === 'delete_backup') {
+    // Removes one backup file (identified by its history entry's timestamp,
+    // same identity convention CarShow's backup.php 'delete' action uses)
+    // and its history entry together. Refuses to delete the last file left
+    // on disk — same "never leave zero backups" floor samBackupPurge()'s
+    // own max(1, ...) already gives the automatic purge.
+    $userId = getAuthUserId();
+    $timestamp = (string)($input['timestamp'] ?? '');
+    try {
+        $history = samReadBackupHistory($pdo);
+        $target = null;
+        foreach ($history as $e) {
+            if (is_array($e) && ($e['timestamp'] ?? null) === $timestamp) { $target = $e; break; }
+        }
+        if ($target === null) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'error' => 'Backup log entry not found.']);
+        } else {
+            $backupDir = __DIR__ . '/backups';
+            $fileName = (string)($target['fileName'] ?? '');
+            if ($fileName !== '' && preg_match('/^backup_[0-9\-_]+\.sql(\.gz)?$/', $fileName)) {
+                $path = $backupDir . '/' . $fileName;
+                if (is_file($path)) {
+                    if (samBackupFileCount($backupDir) <= 1) {
+                        http_response_code(400);
+                        echo json_encode(['success' => false, 'error' => "Can't delete this — it's the only backup left on the server. Run a new backup first."]);
+                        exit;
+                    }
+                    @unlink($path);
+                }
+            }
+            $kept = array_values(array_filter($history, function($e) use ($timestamp) {
+                return !(is_array($e) && ($e['timestamp'] ?? null) === $timestamp);
+            }));
+            $stmt = $pdo->prepare("INSERT INTO sam_store (`key`, `value`) VALUES ('sam_backup_history', ?)
+                ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)");
+            $stmt->execute([json_encode($kept)]);
+            logAudit($pdo, $userId, 'delete_backup', 'system', 'backup', null, ['timestamp' => $timestamp], 'success', "Deleted backup: $timestamp");
+            echo json_encode(['success' => true, 'history' => $kept]);
+        }
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => 'Failed to delete backup: ' . $e->getMessage()]);
+    }
+
+} elseif ($action === 'download_backup') {
+    // Streams one backup file's raw bytes. Kept as a normal JSON-POST action
+    // (not a query-string GET) to match this file's Content-Type: application/
+    // json enforcement on POST — the client fetches it and saves the response
+    // as a Blob rather than navigating to a download link directly.
+    $name = (string)($input['name'] ?? '');
+    $backupDir = __DIR__ . '/backups';
+    $path = $backupDir . '/' . $name;
+    if (!preg_match('/^backup_[0-9\-_]+\.sql(\.gz)?$/', $name) || !is_file($path)) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'error' => 'Backup file not found — it may have aged past the retention limit (newest ' . SAM_BACKUP_KEEP . ' kept).']);
+        exit;
+    }
+    header('Content-Type: application/octet-stream');
+    header('Content-Disposition: attachment; filename="' . $name . '"');
+    header('Content-Length: ' . filesize($path));
+    readfile($path);
+    exit;
+
+} elseif ($action === 'send_email') {
+    // Replaces the old client-side Gmail OAuth send (sendEmailsViaGmail() in
+    // index.html, removed) — Announce Winners' "Send Winning/NonWinner
+    // Emails" now calls this once per email via sam_send_mail() (the same
+    // raw-SMTP sender already used for password-reset), using the .env
+    // SMTP_* credentials. If $to is blank but $bcc is set (the bulk
+    // non-winner send, BCC-only), defaults $to to SMTP_FROM so
+    // sam_send_mail()'s "at least one To" requirement is still met without
+    // exposing the club's own address to recipients as a visible To:.
+    $to      = (string)($input['to'] ?? '');
+    $subject = (string)($input['subject'] ?? '');
+    $body    = (string)($input['body'] ?? '');
+    $cc      = (string)($input['cc'] ?? '');
+    $bcc     = (string)($input['bcc'] ?? '');
+    if ($to === '' && $bcc !== '') $to = $env['SMTP_FROM'] ?? ($env['SMTP_USER'] ?? '');
+
+    if ($to === '' || $subject === '' || $body === '') {
+        echo json_encode(['success' => false, 'error' => 'to, subject, and body are required.']);
+    } elseif (sam_send_mail($to, $subject, $body, $env, $cc, $bcc)) {
+        logQuery($action, 'SEND_EMAIL', 'SUCCESS', "To: $to");
+        echo json_encode(['success' => true]);
+    } else {
+        logQuery($action, 'SEND_EMAIL', 'ERROR', "To: $to");
+        echo json_encode(['success' => false, 'error' => 'Send failed — check SMTP settings.']);
+    }
+
+} elseif ($action === 'get_backup_schedule') {
+    try {
+        echo json_encode(['success' => true, 'schedule' => samGetBackupSchedule($pdo)]);
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => 'Failed to load schedule: ' . $e->getMessage()]);
+    }
+
+} elseif ($action === 'save_backup_schedule') {
+    try {
+        $schedule = [
+            'enabled' => !empty($input['enabled']),
+            'startDate' => (string)($input['startDate'] ?? ''),
+            'endDate' => (string)($input['endDate'] ?? ''),
+            // Server-owned bookkeeping — preserve whatever's already there so a
+            // settings save can't wipe today's "already ran" marker and cause
+            // an extra same-day auto-run on the next login.
+            'lastAutoRunDate' => samGetBackupSchedule($pdo)['lastAutoRunDate'],
+        ];
+        samSaveBackupSchedule($pdo, $schedule);
+        echo json_encode(['success' => true, 'schedule' => $schedule]);
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => 'Failed to save schedule: ' . $e->getMessage()]);
     }
 
 } elseif ($action === 'validate_payment') {

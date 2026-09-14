@@ -354,6 +354,7 @@ function getRateLimitConfig($action) {
         'login' => ['maxRequests' => 8, 'windowSeconds' => 300],         // 8 per 5 minutes — brute-force guard
         'forgot_password' => ['maxRequests' => 3, 'windowSeconds' => 3600], // 3 per hour — don't spam the admin inbox
         'reset_password' => ['maxRequests' => 8, 'windowSeconds' => 300],  // 8 per 5 minutes — token brute-force guard
+        'verify_settings_password' => ['maxRequests' => 8, 'windowSeconds' => 300], // 8 per 5 minutes — Developer gate brute-force guard
         'scan_inbox' => ['maxRequests' => 1, 'windowSeconds' => 300],     // 1 per 5 minutes
         'set_password' => ['maxRequests' => 5, 'windowSeconds' => 900],   // 5 per 15 minutes
         // Raised from 100 to 400 per minute — per-field inline auto-save (e.g. bid
@@ -698,6 +699,7 @@ function createDatabaseBackup($pdo, $backupDir, $dbName) {
         @unlink($backupFile);
 
         if (file_exists($gzFile)) {
+            samBackupPurge($backupDir, SAM_BACKUP_KEEP);
             return [
                 'success' => true,
                 'file' => $gzFile,
@@ -705,6 +707,7 @@ function createDatabaseBackup($pdo, $backupDir, $dbName) {
                 'timestamp' => date('Y-m-d H:i:s')
             ];
         } elseif (file_exists($backupFile)) {
+            samBackupPurge($backupDir, SAM_BACKUP_KEEP);
             return [
                 'success' => true,
                 'file' => $backupFile,
@@ -749,6 +752,143 @@ function listBackups($backupDir) {
     });
 
     return $backups;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BACKUPS — Developer > Backups: "Backup Now" / auto-backup schedule / history log
+//
+// createDatabaseBackup()/listBackups() above already did the actual file work
+// (a gzip'd JSON dump of every table, listed by globbing backups/) — this
+// section adds three things on top, matching the CarShow app's own Backups
+// feature (App/deploy/backup.php + lib.php) as closely as SAM's architecture
+// allows:
+//   1. Retention (samBackupPurge) — createDatabaseBackup() didn't purge old
+//      files before; every "Backup Now" (or auto run) now keeps only the
+//      newest SAM_BACKUP_KEEP files on disk.
+//   2. A permanent history log (samAppendBackupHistory/samReadBackupHistory)
+//      of every attempt, success or failure — unlike listBackups(), which
+//      only reflects files currently on disk and says nothing about a failed
+//      run or one since purged. Stored as a sam_store row (sam_backup_history),
+//      not a separate JSON file on disk like CarShow's backup-history.json —
+//      SAM already keeps all its config/state in sam_store, so this follows
+//      that convention instead of introducing a new on-disk file format.
+//   3. An auto-backup schedule (samGetBackupSchedule/samSaveBackupSchedule)
+//      and the daily check that acts on it (samBackupAutoCheck), also stored
+//      as its own sam_store row (sam_backup_schedule). CarShow's equivalent
+//      check is piggybacked on a Windows Scheduled Task that polls the app
+//      every ~15 minutes for an unrelated reason (the Import Schedule) — SAM
+//      has no such infrastructure, so samBackupAutoCheck() is instead called
+//      from api.php's 'login' action, which fires every time someone opens
+//      and authenticates into the app. Less precisely "at midnight" than
+//      CarShow's version (only as often as someone actually logs in), but
+//      needs no new scheduled task or server cron to exist.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Keep at most this many backup files on disk — mirrors CarShow's
+// CARSHOW_BACKUP_KEEP (also 30). The history log (below) is kept forever
+// regardless, so a purged file's record isn't lost, only the file itself.
+define('SAM_BACKUP_KEEP', 30);
+
+// Deletes the oldest backup_*.sql* files beyond $keep, oldest first.
+// max(1, ...) is a floor: the newest backup is never deleted by this
+// function, so a misconfigured $keep of 0 can't leave zero backups on disk.
+function samBackupPurge($backupDir, $keep) {
+    $keep = max(1, (int)$keep);
+    $files = glob($backupDir . '/backup_*.sql*') ?: [];
+    if (count($files) <= $keep) return;
+    usort($files, function($a, $b) { return filemtime($a) - filemtime($b); });
+    foreach (array_slice($files, 0, count($files) - $keep) as $f) @unlink($f);
+}
+
+// How many backup files currently exist on disk — used by the 'delete_backup'
+// action in api.php to refuse deleting the very last one, same guarantee
+// samBackupPurge()'s max(1, ...) floor gives the automatic purge.
+function samBackupFileCount($backupDir) {
+    return count(glob($backupDir . '/backup_*.sql*') ?: []);
+}
+
+// Reads the permanent history log (every attempt, success or failure) from
+// sam_store. Newest-last (chronological append order) — callers that want
+// newest-first reverse it themselves, matching how listBackups() above sorts
+// on read rather than on write.
+function samReadBackupHistory($pdo) {
+    try {
+        $val = $pdo->query("SELECT `value` FROM sam_store WHERE `key` = 'sam_backup_history' LIMIT 1")->fetchColumn();
+        $decoded = $val ? json_decode($val, true) : [];
+        return is_array($decoded) ? $decoded : [];
+    } catch (Exception $e) {
+        return [];
+    }
+}
+
+// Appends one entry to the history log. Read-modify-write, same as
+// listBackups()'s glob-and-sort — SAM's sam_store writes aren't
+// lock-guarded the way CarShow's carshow_append_json_list() is (flock on a
+// real file), but backups are rare, deliberate, low-concurrency events (one
+// manual click, or one login-triggered auto-check per day), so the narrow
+// race window here is an accepted tradeoff rather than an oversight.
+function samAppendBackupHistory($pdo, $entry) {
+    $history = samReadBackupHistory($pdo);
+    $history[] = $entry;
+    $stmt = $pdo->prepare("INSERT INTO sam_store (`key`, `value`) VALUES ('sam_backup_history', ?)
+        ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)");
+    $stmt->execute([json_encode($history)]);
+}
+
+// Reads the auto-backup schedule, defaulting every field so callers never
+// have to null-check. lastAutoRunDate is server-owned bookkeeping (see
+// samBackupAutoCheck()) — a client save must always preserve it, never set
+// it directly, same rule CarShow's save_schedule action enforces.
+function samGetBackupSchedule($pdo) {
+    try {
+        $val = $pdo->query("SELECT `value` FROM sam_store WHERE `key` = 'sam_backup_schedule' LIMIT 1")->fetchColumn();
+        $s = $val ? json_decode($val, true) : [];
+        if (!is_array($s)) $s = [];
+    } catch (Exception $e) {
+        $s = [];
+    }
+    return [
+        'enabled' => !empty($s['enabled']),
+        'startDate' => (string)($s['startDate'] ?? ''),
+        'endDate' => (string)($s['endDate'] ?? ''),
+        'lastAutoRunDate' => (string)($s['lastAutoRunDate'] ?? ''),
+    ];
+}
+
+function samSaveBackupSchedule($pdo, $schedule) {
+    $stmt = $pdo->prepare("INSERT INTO sam_store (`key`, `value`) VALUES ('sam_backup_schedule', ?)
+        ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)");
+    $stmt->execute([json_encode($schedule)]);
+}
+
+// Called from api.php's 'login' action on every successful login — SAM's
+// stand-in for CarShow's dedicated ~15-minute scheduled-task poll (see this
+// section's header comment for why). Runs at most once per calendar date
+// (server's default timezone, set once near the top of api.php): the first
+// login on/after midnight that finds today's date not yet recorded.
+// Attempts exactly once per day regardless of outcome — lastAutoRunDate is
+// set whether the run succeeded or failed, so a persistently failing backup
+// surfaces once a day in the log rather than retrying on every single login.
+function samBackupAutoCheck($pdo, $backupDir, $dbName) {
+    $schedule = samGetBackupSchedule($pdo);
+    if (!$schedule['enabled']) return;
+    $today = date('Y-m-d');
+    if ($schedule['startDate'] !== '' && $today < $schedule['startDate']) return;
+    if ($schedule['endDate']   !== '' && $today > $schedule['endDate'])   return;
+    if ($schedule['lastAutoRunDate'] === $today) return;
+
+    $result = createDatabaseBackup($pdo, $backupDir, $dbName);
+    $entry = ['timestamp' => gmdate('c'), 'status' => $result['success'] ? 'success' : 'failed', 'reason' => 'auto'];
+    if ($result['success']) {
+        $entry['fileName'] = basename($result['file']);
+        $entry['sizeBytes'] = $result['size'];
+    } else {
+        $entry['error'] = $result['error'];
+    }
+    samAppendBackupHistory($pdo, $entry);
+
+    $schedule['lastAutoRunDate'] = $today;
+    samSaveBackupSchedule($pdo, $schedule);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

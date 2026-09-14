@@ -21,8 +21,8 @@
        Screen") — it only looks at apple-touch-icon. Kept in sync with the same
        Club Branding favicon by updateFavicon() below. -->
   <link rel="apple-touch-icon" id="apple-touch-icon-link" href="Images/ETCClogoWhiteBackground.png" />
-  <link rel="stylesheet" href="css/table.css?v=1789378469" />
-  <link rel="stylesheet" href="css/toolbar.css?v=1789378469" />
+  <link rel="stylesheet" href="css/table.css?v=1789382964" />
+  <link rel="stylesheet" href="css/toolbar.css?v=1789382964" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -279,6 +279,18 @@
       text-transform: uppercase;
       letter-spacing: 0.04em;
     }
+
+    /* Collapsible cards (Settings screen — initCollapsibleCards()). The
+       header stays visible/clickable; everything else in the card is hidden
+       while collapsed. A ▸/▾ indicator is added via JS, not CSS content, so
+       it can be toggled per-card without a stylesheet rule per state. */
+    .card.collapsible > .card-header { cursor: pointer; user-select: none; }
+    /* !important: some cards' content wrapper (e.g. "Developer Tools") carries
+       its own inline style="display:flex;..." for its internal layout — an
+       inline style attribute beats a class-selector rule regardless of how
+       many classes are chained, so without !important this rule silently did
+       nothing on any card whose content div sets its own inline display. */
+    .card.collapsible.collapsed > :not(.card-header) { display: none !important; }
 
     /* ── Connection status ── */
     #gmail-status {
@@ -888,9 +900,6 @@
       </div>
       <div class="nav-item nav-subitem" data-screen="api">
         🔌 API
-      </div>
-      <div class="nav-item nav-subitem" data-screen="import-members">
-        📇 Import Members
       </div>
       <div class="nav-item nav-subitem" id="nav-dev-regtests" onclick="window.open('test.html','_blank')">
         ▶ Regression Tests
@@ -1677,7 +1686,7 @@
           <div class="form-row">
             <label for="inp-app-password">Login Password</label>
             <input type="password" id="inp-app-password" style="width:250px;" placeholder="Enter new password" />
-            <span class="form-hint">Password required to access the Silent Auction Manager (default: ETCCauctionoct2026)</span>
+            <span class="form-hint">Password required to access the Silent Auction Manager</span>
           </div>
           <div style="margin-top:12px;">
             <button class="btn primary" onclick="changeAppPassword()" style="font-size:12px;white-space:nowrap;">Update Password</button>
@@ -1685,7 +1694,7 @@
           <div class="form-row" style="margin-top:22px;">
             <label for="inp-settings-password">Settings Password</label>
             <input type="password" id="inp-settings-password" style="width:250px;" placeholder="Enter new password" />
-            <span class="form-hint">Password gating access to Settings, Configuration, and Delete Auction (default: Gladiator#1)</span>
+            <span class="form-hint">Password gating access to Settings, Configuration, and Delete Auction</span>
           </div>
           <div style="margin-top:12px;">
             <button class="btn primary" onclick="changeSettingsPassword()" style="font-size:12px;white-space:nowrap;">Change Password</button>
@@ -1778,22 +1787,6 @@
         </div>
       </div>
 
-      <!-- Data Backup -->
-      <div class="card" style="margin-bottom:20px;">
-        <div class="card-header">Data Backup</div>
-        <div style="padding:16px;display:flex;flex-direction:column;gap:14px;">
-          <div style="display:flex;align-items:center;gap:16px;">
-            <button class="btn primary" onclick="exportBackup()">⬇ Export Backup</button>
-            <span style="font-size:12px;color:var(--text-secondary);">Download all auction data (items, bidders, winners, payments) as a JSON file.</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:16px;">
-            <button class="btn" onclick="document.getElementById('import-backup-file').click()">⬆ Import Backup</button>
-            <input type="file" id="import-backup-file" accept=".json" style="display:none;" onchange="importBackup(this)">
-            <span style="font-size:12px;color:var(--text-secondary);">Restore auction data from a previously exported backup file. <strong style="color:var(--danger);">This will overwrite all current data.</strong></span>
-          </div>
-        </div>
-      </div>
-
       <!-- Auction Management -->
       <div class="card" style="margin-bottom:20px;">
         <div class="card-header">Auction Management</div>
@@ -1806,21 +1799,6 @@
             <button class="btn danger" onclick="deleteAuctionByName()">Delete Auction</button>
           </div>
           <div id="auction-delete-status" style="margin-top:8px;font-size:12px;color:var(--text-secondary);"></div>
-        </div>
-      </div>
-
-      <!-- Backend Sync -->
-      <div class="card" style="margin-bottom:20px;">
-        <div class="card-header">Backend Sync</div>
-        <div style="padding:16px;display:flex;flex-direction:column;gap:12px;">
-          <p style="font-size:12px;color:var(--text-secondary);margin:0;">
-            Sync current auction data to the backend MySQL database. This one-time operation ensures data persistence and prepares for multi-user features.
-          </p>
-          <div style="display:flex;align-items:center;gap:16px;">
-            <button class="btn primary" onclick="migrateCurrentAuctionToBackend()">⬆ Sync to Backend</button>
-            <span style="font-size:12px;color:var(--text-secondary);">Upload all items, bidders, winners, and payments for the current auction.</span>
-          </div>
-          <div id="backend-sync-status" style="font-size:12px;color:var(--text-secondary);"></div>
         </div>
       </div>
 
@@ -1907,6 +1885,76 @@
             <button class="btn" onclick="loadTableData()">Load</button>
           </div>
           <div id="table-viewer-container" style="margin-top:16px;"></div>
+        </div>
+      </div>
+
+      <!-- Import Members (was its own Developer screen). data-settings-autosave="off":
+           its file input change must not trigger saveSettings(). -->
+      <div class="card" style="margin-bottom:20px;" data-settings-autosave="off">
+        <div class="card-header">Import Members</div>
+        <div style="padding:16px;">
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 16px;">Import the club member roster (Last Name, First Name, Email) from a CSV. Used to populate the ETCC Member Name dropdown on the Silent Auction Form (add-item.php).</p>
+          <h4 style="margin:0 0 8px;font-size:13px;">Import CSV</h4>
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;">CSV must have header columns for <strong>Last Name</strong>, <strong>First Name</strong>, and <strong>Email</strong> (column names are matched case-insensitively; common variants like "last_name" or "Last" are accepted). Importing replaces the entire member list.</p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input type="file" id="inp-import-members-csv" accept=".csv" style="font-size:12px;">
+            <button class="btn primary" onclick="importMembersCsv()">Import</button>
+          </div>
+          <div id="import-members-status" style="margin-top:10px;font-size:12px;color:var(--text-secondary);"></div>
+
+          <h4 style="margin:20px 0 8px;font-size:13px;">Import History</h4>
+          <div style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:6px;">
+            <table class="tablekit" id="import-history-table" style="width:100%;table-layout:fixed;">
+              <colgroup><col style="width:220px;"><col></colgroup>
+              <thead><tr><th>Date/Time</th><th>Members Imported</th></tr></thead>
+              <tbody id="import-history-tbody"></tbody>
+            </table>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;margin:20px 0 8px;">
+            <h4 id="import-members-count" style="margin:0;font-size:13px;">0 members</h4>
+            <button class="btn danger" style="font-size:11px;padding:3px 10px;" onclick="clearImportedMembers()">Delete All</button>
+          </div>
+          <div style="max-height:400px;overflow:auto;border:1px solid var(--border);border-radius:6px;">
+            <table class="tablekit" id="import-members-table" style="width:100%;table-layout:fixed;">
+              <colgroup><col style="width:200px;"><col style="width:200px;"><col></colgroup>
+              <thead><tr><th>Last Name</th><th>First Name</th><th>Email</th></tr></thead>
+              <tbody id="import-members-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Backups (was its own Developer screen). Schedule fields save via
+           saveBackupScheduleFields(), not saveSettings() — see autosave opt-out. -->
+      <div class="card" style="margin-bottom:20px;" data-settings-autosave="off">
+        <div class="card-header">Backups</div>
+        <div style="padding:16px;">
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 16px;">Backs up the app's live database (items, bidders, winners, payments, settings, audit log) into a dated file kept on the server, for point-in-time recovery independent of the live MySQL data. Only the newest 30 backup files are kept on disk; the log is kept permanently, even for a purged or failed run.</p>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <button class="btn primary" id="btn-backup-now" onclick="requestBackupNow()">💾 Backup Now</button>
+            <span id="backup-run-status" style="font-size:12px;color:var(--text-secondary);"></span>
+          </div>
+          <div style="margin-top:14px;display:flex;align-items:center;gap:12px;">
+            <span style="font-size:12px;font-weight:600;">Backup Log</span>
+            <button class="btn" id="btn-toggle-backup-log" style="font-size:12px;padding:4px 10px;" onclick="toggleBackupsPanel()">📂 View Logs</button>
+          </div>
+          <div id="backup-log-wrap" style="display:none;margin-top:12px;max-height:320px;overflow:auto;"></div>
+
+          <h4 style="margin:20px 0 8px;font-size:13px;">Automatic Backups</h4>
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;">Runs once a day (at the first login of the day), only while enabled and within the active dates below.</p>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="inp-backup-auto-enabled" onchange="saveBackupScheduleFields()">
+            <label for="inp-backup-auto-enabled" style="font-size:13px;">Enable automatic backups</label>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:12px;flex-wrap:wrap;">
+            <span style="font-size:13px;font-weight:600;">Active dates</span>
+            <input type="date" id="inp-backup-auto-start" onchange="saveBackupScheduleFields()">
+            <span style="font-size:12px;color:var(--text-secondary);">to</span>
+            <input type="date" id="inp-backup-auto-end" onchange="saveBackupScheduleFields()">
+          </div>
+          <div id="backup-schedule-status" style="margin-top:8px;font-size:12px;"></div>
+          <div id="backup-last-auto-run" style="margin-top:8px;font-size:12px;color:var(--text-secondary);"></div>
         </div>
       </div>
 
@@ -1999,48 +2047,6 @@
       </div>
     </section>
 
-    <!-- ══ Developer: Import Members ══ -->
-    <section class="screen" id="screen-import-members">
-      <div style="max-width:800px;margin:0 auto;">
-      <div class="page-header">
-        <h2>Import Members</h2>
-        <p>Import the club member roster (Last Name, First Name, Email) from a CSV. Used to populate the ETCC Member Name dropdown on the Silent Auction Form (add-item.php).</p>
-      </div>
-      <div class="card" style="margin-bottom:16px;padding:16px;">
-        <h4 style="margin:0 0 8px;font-size:13px;">Import CSV</h4>
-        <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;">CSV must have header columns for <strong>Last Name</strong>, <strong>First Name</strong>, and <strong>Email</strong> (column names are matched case-insensitively; common variants like "last_name" or "Last" are accepted). Importing replaces the entire member list.</p>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <input type="file" id="inp-import-members-csv" accept=".csv" style="font-size:12px;">
-          <button class="btn primary" onclick="importMembersCsv()">Import</button>
-        </div>
-        <div id="import-members-status" style="margin-top:10px;font-size:12px;color:var(--text-secondary);"></div>
-      </div>
-      <div class="card" style="margin-bottom:16px;padding:0;">
-        <div class="card-header" style="padding:12px 16px;">Import History</div>
-        <div style="max-height:220px;overflow:auto;">
-          <table class="tablekit" id="import-history-table" style="width:100%;table-layout:fixed;">
-            <colgroup><col style="width:220px;"><col></colgroup>
-            <thead><tr><th>Date/Time</th><th>Members Imported</th></tr></thead>
-            <tbody id="import-history-tbody"></tbody>
-          </table>
-        </div>
-      </div>
-      <div class="card" style="padding:0;">
-        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;">
-          <span id="import-members-count">0 members</span>
-          <button class="btn danger" style="font-size:11px;padding:3px 10px;" onclick="clearImportedMembers()">Delete All</button>
-        </div>
-        <div style="max-height:400px;overflow:auto;">
-          <table class="tablekit" id="import-members-table" style="width:100%;table-layout:fixed;">
-            <colgroup><col style="width:200px;"><col style="width:200px;"><col></colgroup>
-            <thead><tr><th>Last Name</th><th>First Name</th><th>Email</th></tr></thead>
-            <tbody id="import-members-tbody"></tbody>
-          </table>
-        </div>
-      </div>
-      </div>
-    </section>
-
   </main>
 </div>
 
@@ -2109,7 +2115,11 @@
   <div style="background:var(--bg);border-radius:10px;width:400px;max-width:95vw;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,0.25);">
     <h3 style="margin:0 0 16px;color:var(--text);font-size:16px;">Settings Password</h3>
     <p style="margin:0 0 16px;color:var(--text-secondary);font-size:13px;">Enter your Settings password to continue:</p>
-    <input type="password" id="auth-password" placeholder="Password" style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);margin-bottom:16px;" onkeypress="if(event.key==='Enter') submitAuthPassword();" />
+    <input type="password" id="auth-password" placeholder="Password" style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);margin-bottom:8px;" onkeypress="if(event.key==='Enter') submitAuthPassword();" />
+    <div style="margin-bottom:16px;font-size:12px;">
+      <a href="#" id="auth-forgot-link" onclick="requestSettingsPasswordReset(); return false;" style="color:var(--accent);text-decoration:none;">Forgot password?</a>
+      <div id="auth-forgot-status" style="display:none;margin-top:6px;color:var(--text-secondary);"></div>
+    </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
       <button onclick="closeAuthModal()" style="padding:8px 16px;background:var(--bg-section);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--text);font-size:13px;">Cancel</button>
       <button onclick="submitAuthPassword()" style="padding:8px 16px;background:var(--accent);border:none;border-radius:6px;cursor:pointer;color:#fff;font-size:13px;font-weight:600;">Unlock</button>
@@ -2384,12 +2394,11 @@
         <li><strong>Square Fee %</strong> and <strong>Square Flat Fee</strong> — credit card surcharge rates used on invoices and Pay &amp; Pickup</li>
         <li><strong>Settings Password</strong> — controls access to Settings, Configuration, and Delete Auction</li>
         <li><strong>Maintenance Mode</strong> — shows visitors a maintenance screen; staff bypass it with the settings password</li>
-        <li><strong>Data Backup</strong> — export a full JSON backup of all auction data, or import a previously saved backup</li>
         <li><strong>Developer Tools</strong> — debug mode, maintenance mode, environment, debug log, database push</li>
       </ul>
 
       <h3>Data &amp; Sync</h3>
-      <p>All data is stored in the browser's localStorage and automatically synced to a MySQL database on the server after every change. On startup, the app loads the latest data from the server so data is preserved across browsers and devices. Use <strong>Export Backup</strong> in Settings to save a local copy before major changes.</p>
+      <p>All data is stored in the browser's localStorage and automatically synced to a MySQL database on the server after every change. On startup, the app loads the latest data from the server so data is preserved across browsers and devices. Use the <strong>Backups</strong> card in Settings to save a dated snapshot of the live database on the server, view the backup log, or set up an automatic daily backup.</p>
 
       <h3>Item Categories</h3>
       <ul>
@@ -2408,8 +2417,8 @@
 </div>
 
 <!-- Scripts -->
-<script src="js/table.js?v=1789378469"></script>
-<script src="js/toolbar.js?v=1789378469"></script>
+<script src="js/table.js?v=1789382964"></script>
+<script src="js/toolbar.js?v=1789382964"></script>
 <script>
 (function() {
   const _origInit = PageToolbar.init.bind(PageToolbar);
@@ -3491,36 +3500,34 @@ function buildMimeMessage(to, subject, bodyText) {
   return btoa(unescape(encodeURIComponent(msg))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-// Called from the Email Bidders popup via window.opener.sendEmailsViaGmail(emails)
-// emails = [{to, subject, body}]
-async function sendEmailsViaGmail(emails) {
-  if (!accessToken) {
-    throw new Error('Not connected to Gmail. Please go to Step 1 (Load Item Emails) and click Scan Inbox to connect, then try again.');
-  }
-  await debugLog(`Sending ${emails.length} email${emails.length !== 1 ? 's' : ''} via Gmail`);
+// Called from the Email Bidders popup via window.opener.sendEmailsViaSmtp(emails)
+// emails = [{to, subject, body, cc?, bcc?}]. Replaces the old Gmail-OAuth
+// send (sendEmailsViaGmail(), removed) with the server-side SMTP sender
+// (sam_send_mail() in security-helpers.php, same one used for password-reset
+// email) via api.php's send_email action — no Gmail account/OAuth needed.
+async function sendEmailsViaSmtp(emails) {
+  await debugLog(`Sending ${emails.length} email${emails.length !== 1 ? 's' : ''} via SMTP`);
   let sent = 0, failed = [];
   for (const em of emails) {
     try {
-      const raw = buildMimeMessage(em.to, em.subject, em.body);
-      const resp = await fetch('https://www.googleapis.com/gmail/v1/users/me/messages/send', {
+      const resp = await secureApiFetch('https://etccapps.com/apps/sam/api.php', {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raw })
+        body: JSON.stringify({ action: 'send_email', to: em.to, subject: em.subject, body: em.body, cc: em.cc || '', bcc: em.bcc || '' })
       });
-      if (resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data && data.success) {
         sent++;
       } else {
-        const err = await resp.json().catch(() => ({}));
-        const msg = err.error?.message || ('HTTP ' + resp.status);
+        const msg = (data && data.error) || ('HTTP ' + resp.status);
         const deployDate = getDeployDate();
-        await debugLog(`✗ Gmail send failed for ${em.to}: ${msg} [${deployDate}]`, 'ERROR');
-        console.error('Gmail send failed for', em.to, ':', msg);
+        await debugLog(`✗ Email send failed for ${em.to}: ${msg} [${deployDate}]`, 'ERROR');
+        console.error('Email send failed for', em.to, ':', msg);
         failed.push(em.to + ' (' + msg + ')');
       }
     } catch (e) {
       const deployDate = getDeployDate();
-      await debugLog(`✗ Gmail send error for ${em.to}: ${e.message} [${deployDate}]`, 'ERROR');
-      console.error('Gmail send error for', em.to, ':', e);
+      await debugLog(`✗ Email send error for ${em.to}: ${e.message} [${deployDate}]`, 'ERROR');
+      console.error('Email send error for', em.to, ':', e);
       failed.push(em.to + ' (' + e.message + ')');
     }
   }
@@ -6154,30 +6161,120 @@ function loadSettingsForm() {
   updateFavicon(s.clubFavicon);
   const settingsPwEl = document.getElementById('inp-settings-password');
   if (settingsPwEl) settingsPwEl.value = '';
+
+  // Import Members and Backups moved into Settings as their own collapsible
+  // cards (were separate Developer screens) — populate their contents same
+  // as navigate() used to do when entering those screens directly.
+  refreshImportMembersTable();
+  refreshImportHistoryTable();
+  loadBackupSchedule();
+
+  initCollapsibleCards('screen-settings');
+  initSettingsAutoSave();
+}
+
+// Makes every direct-child .card inside the given section collapsible,
+// starting collapsed — click the header to toggle. Bound once per card
+// (guarded by a data attribute) so repeat navigations to the screen (which
+// re-run this on every loadSettingsForm() call) don't stack duplicate click
+// listeners or reset a card the user had already opened back to collapsed.
+function initCollapsibleCards(sectionId) {
+  const section = document.getElementById(sectionId);
+  if (!section) return;
+  section.querySelectorAll(':scope > .card').forEach(card => {
+    if (card.dataset.collapsibleInit) return;
+    const header = card.querySelector(':scope > .card-header');
+    if (!header) return;
+    card.classList.add('collapsible', 'collapsed');
+    card.dataset.collapsibleInit = '1';
+    header.addEventListener('click', e => {
+      // Don't toggle when the click landed on an interactive element inside
+      // the header (most Settings card-headers are plain text, but this
+      // guards any that later gain an embedded button/link).
+      if (e.target.closest('button, a, input, select, textarea')) return;
+      card.classList.toggle('collapsed');
+    });
+  });
+}
+
+// Auto-save for the Settings screen: any field change now calls the existing
+// saveSettings() automatically, instead of requiring the Save Settings
+// button. 'change' (not 'input') so text fields save on blur/Enter, not on
+// every keystroke — matches the pattern already used by the Backup Schedule
+// fields (Developer > Backups) and Import Schedule-style auto-save elsewhere
+// in this app. One delegated listener on the section (bound once, guarded
+// the same way as initCollapsibleCards above) rather than one per field, so
+// this doesn't need updating every time a field is added to the form.
+let _settingsAutoSaveBound = false;
+function initSettingsAutoSave() {
+  if (_settingsAutoSaveBound) return;
+  _settingsAutoSaveBound = true;
+  document.getElementById('screen-settings')?.addEventListener('change', e => {
+    if (e.target.closest('button')) return; // buttons don't fire 'change'; defensive only
+    // Import Members (file input) and Backups (schedule fields, own
+    // onchange="saveBackupScheduleFields()") aren't part of the settings
+    // blob — each is a separate card with its own save path, opted out here
+    // so a field change there doesn't also fire an unrelated saveSettings().
+    if (e.target.closest('[data-settings-autosave="off"]')) return;
+    saveSettings();
+  });
 }
 
 // Deploy date is baked into the footer span by deploy.ps1; do not overwrite it
 // from Settings (which may be blank/stale after server sync).
 function updateFooterDeployDate() { /* no-op: footer value is authoritative */ }
 
-function changeSettingsPassword() {
+// Changes one stored password via api.php's dedicated 'set_password' action.
+// save_settings / the auto-sync 'set' can no longer change a stored password
+// (server-side sam_guard_settings_passwords() always keeps the stored value),
+// because a stale tab re-posting its old settings blob used to silently roll
+// the password back. Only after the server confirms is the local copy updated
+// — via the unwrapped setItem, so it isn't re-posted as a blob write.
+// Returns '' on success, or an error message.
+async function saveServerPassword(field, newPassword) {
+  try {
+    const res = await secureApiFetch('https://etccapps.com/apps/sam/api.php', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'set_password', field, password: newPassword })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) {
+      if (res.status === 403) return 'your session token is out of date — log out, log back in, and try again';
+      if (res.status === 429) return 'too many password changes — wait 15 minutes and try again';
+      return data.error || ('HTTP ' + res.status);
+    }
+    const settings = DB.getSettings();
+    settings[field] = newPassword;
+    window._samOrigSetItem('sam_settings', JSON.stringify(settings));
+    return '';
+  } catch (e) {
+    return e.message;
+  }
+}
+
+async function changeSettingsPassword() {
   const newPassword = document.getElementById('inp-settings-password').value.trim();
   if (!newPassword) {
     alert('Please enter a new password.');
     return;
   }
-  const settings = DB.getSettings();
-  settings.settingsPassword = newPassword;
-  DB.saveSettings(settings);
-
-  // Persist to API/database (critical for server-side auth)
-  secureApiFetch('https://etccapps.com/apps/sam/api.php', {
-    method: 'POST',
-    body: JSON.stringify({ action: 'save_settings', data: settings })
-  }).catch(e => console.error('[Settings] API save failed:', e));
-
-  document.getElementById('inp-settings-password').value = '';
-  alert('Password changed successfully.');
+  // Checked (not fire-and-forget) — a failed server save used to still say
+  // "Password changed successfully." and then revert on the next sync.
+  const btn = document.querySelector('button[onclick="changeSettingsPassword()"]');
+  if (btn) btn.disabled = true;
+  try {
+    const err = await saveServerPassword('settingsPassword', newPassword);
+    if (err) {
+      debugLog('✗ Settings password change failed: ' + err, 'WARN');
+      alert('Password change did NOT save (' + err + '). The old password is still in effect.');
+      return;
+    }
+    debugLog('✓ Settings (Developer) password changed');
+    document.getElementById('inp-settings-password').value = '';
+    alert('Password changed successfully.');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // Session-based authentication state. Stored on window so the regression
@@ -6194,10 +6291,51 @@ let _authPasswordCallback = null;
 function authenticateSettings() {
   return new Promise((resolve) => {
     _authPasswordCallback = resolve;
+    const forgotStatus = document.getElementById('auth-forgot-status');
+    if (forgotStatus) { forgotStatus.style.display = 'none'; forgotStatus.textContent = ''; }
     document.getElementById('auth-password').value = '';
     document.getElementById('auth-modal').style.display = 'flex';
     document.getElementById('auth-password').focus();
   });
+}
+
+// Developer password prompt's "Forgot password?" — same flow as the login
+// screen's link (api.php 'forgot_password'), with scope:'settings' so the
+// emailed link resets settingsPassword instead of the login password. The
+// link goes to the club's fixed admin inbox (RESET_ADMIN_EMAIL), never to an
+// address typed here — otherwise anyone logged in could take over the gate.
+async function requestSettingsPasswordReset() {
+  const link = document.getElementById('auth-forgot-link');
+  const status = document.getElementById('auth-forgot-status');
+  if (link.style.pointerEvents === 'none') return;
+  link.style.pointerEvents = 'none';
+  status.style.display = 'block';
+  status.style.color = 'var(--text-secondary)';
+  status.textContent = 'Sending reset link…';
+  try {
+    const res = await secureApiFetch('https://etccapps.com/apps/sam/api.php', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'forgot_password', scope: 'settings' })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.success) {
+      status.style.color = 'var(--success)';
+      status.textContent = 'Reset link emailed to the admin inbox — valid for 1 hour.';
+      debugLog('✓ Developer password reset link requested');
+    } else {
+      status.style.color = 'var(--danger)';
+      status.textContent = res.status === 429
+        ? 'Too many reset requests. Please try again later.'
+        : (data.error || 'Could not send reset email. Try again later.');
+      debugLog('✗ Developer password reset request failed: ' + status.textContent, 'WARN');
+    }
+  } catch (e) {
+    status.style.color = 'var(--danger)';
+    status.textContent = 'Could not send reset email. Try again later.';
+    debugLog('✗ Developer password reset request failed: ' + e.message, 'WARN');
+  } finally {
+    link.style.pointerEvents = '';
+  }
 }
 
 function closeAuthModal() {
@@ -6227,17 +6365,56 @@ async function toggleDeveloperMenu() {
   devItem.setAttribute('aria-expanded', 'true');
 }
 
-function submitAuthPassword() {
-  const settings = DB.getSettings();
-  // Use settings password if available; otherwise require it to be set
-  const correctPassword = settings.settingsPassword;
-  if (!correctPassword) {
-    alert('Settings password has not been configured.');
+// Verifies against the server (api.php 'verify_settings_password'), not the
+// browser's localStorage copy of settings — that copy can be stale (password
+// changed on another device, a failed re-sync, or DEFAULT_SETTINGS filling in
+// the old default), which let an old password through or rejected the current
+// one. The server's sam_settings row is the single source of truth.
+let _authVerifyInFlight = false;
+async function submitAuthPassword() {
+  if (_authVerifyInFlight) return; // Enter + Unlock click, or key repeat
+  const passwordEl = document.getElementById('auth-password');
+  const password = passwordEl.value;
+  if (!password) {
+    passwordEl.focus();
     return;
   }
-  const password = document.getElementById('auth-password').value;
 
-  if (password === correctPassword) {
+  const unlockBtn = document.querySelector('#auth-modal button[onclick="submitAuthPassword()"]');
+  _authVerifyInFlight = true;
+  if (unlockBtn) unlockBtn.disabled = true;
+  let verified = false;
+  let errorMsg = '';
+  try {
+    const res = await secureApiFetch('https://etccapps.com/apps/sam/api.php', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'verify_settings_password', password })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.success) {
+      verified = true;
+    } else if (res.status === 403) {
+      errorMsg = 'Incorrect password.';
+    } else if (res.status === 429) {
+      errorMsg = 'Too many attempts. Please wait a few minutes and try again.';
+    } else if (res.status === 401) {
+      errorMsg = 'Your session has expired. Please reload the app and log in again.';
+    } else {
+      errorMsg = 'Could not verify the password with the server (' + (data.error || ('HTTP ' + res.status)) + '). Please try again.';
+    }
+  } catch (e) {
+    errorMsg = 'Could not reach the server to verify the password (' + e.message + '). Please check your connection and try again.';
+  } finally {
+    _authVerifyInFlight = false;
+    if (unlockBtn) unlockBtn.disabled = false;
+  }
+
+  // Cancel was clicked while the server check was in flight — closeAuthModal()
+  // already resolved the caller with false, so don't unlock behind its back.
+  if (document.getElementById('auth-modal').style.display === 'none') return;
+
+  if (verified) {
+    debugLog('✓ Settings password verified by server (Developer gate unlocked)');
     window._settingsAuthAt = Date.now();
     document.getElementById('auth-modal').style.display = 'none';
     // Entering the settings password unlocks the Developer submenu, so expand
@@ -6249,9 +6426,10 @@ function submitAuthPassword() {
     if (_authPasswordCallback) _authPasswordCallback(true);
     _authPasswordCallback = null;
   } else {
-    alert('Incorrect password.');
-    document.getElementById('auth-password').value = '';
-    document.getElementById('auth-password').focus();
+    debugLog('✗ Settings password not verified: ' + errorMsg, 'WARN');
+    alert(errorMsg);
+    passwordEl.value = '';
+    passwordEl.focus();
   }
 }
 
@@ -6614,8 +6792,7 @@ async function navigate(screenId) {
     'settings': 'Settings',
     'config': 'Configuration',
     'changelog': 'Change Log',
-    'api': 'API',
-    'import-members': 'Import Members'
+    'api': 'API'
   };
 
   const screenName = screenNames[screenId] || screenId;
@@ -6668,7 +6845,7 @@ async function navigate(screenId) {
   if (workflowScreens.includes(screenId) && !DB.getCurrentAuctionId()) {
     screenId = 'home';
   }
-  const developerScreens = ['settings', 'config', 'changelog', 'api', 'import-members'];
+  const developerScreens = ['settings', 'config', 'changelog', 'api'];
   if (developerScreens.includes(screenId) && !isSettingsAuthenticated()) {
     if (!await authenticateSettings()) return;
   }
@@ -6714,7 +6891,6 @@ async function navigate(screenId) {
   if (screenId === 'settings')       loadSettingsForm();
   if (screenId === 'config')         loadSettingsForm();
   if (screenId === 'api')            loadApiTestPage();
-  if (screenId === 'import-members') { refreshImportMembersTable(); refreshImportHistoryTable(); }
   if (screenId === 'bidding-sheets') {
     PageToolbar.init({ title: '', tableSelector: '#bs-items-table' });
     const tb   = document.getElementById('page-toolbar');
@@ -7183,7 +7359,7 @@ function openEmailBiddersPage() {
       const checked = [...document.querySelectorAll('.bidder-cb:checked')].map(cb => parseInt(cb.dataset.idx));
       const winners = checked.filter(i => allBidders[i].isWinner && allBidders[i].email).map(i => allBidders[i]);
       if (!winners.length) { alert('No winners selected with email addresses.'); return; }
-      if (!window.opener || !window.opener.sendEmailsViaGmail) { alert('Cannot reach main window. Please close and reopen this screen.'); return; }
+      if (!window.opener || !window.opener.sendEmailsViaSmtp) { alert('Cannot reach main window. Please close and reopen this screen.'); return; }
 
       const subject = document.getElementById('email-subject').value.trim();
       const emails = winners.map(b => ({ to: b.email, subject, body: buildWinnerBodyText(b) }));
@@ -7193,7 +7369,7 @@ function openEmailBiddersPage() {
       if (btn) { btn.textContent = 'Sending…'; btn.disabled = true; }
 
       try {
-        const { sent, failed } = await window.opener.sendEmailsViaGmail(emails);
+        const { sent, failed } = await window.opener.sendEmailsViaSmtp(emails);
         const msg = 'Sent ' + sent + ' winner email' + (sent !== 1 ? 's' : '') + ' successfully.'
           + (failed.length ? '\n\nFailed (' + failed.length + '):\n' + failed.join('\n') : '');
         alert(msg);
@@ -7204,20 +7380,34 @@ function openEmailBiddersPage() {
       }
     }
 
-    function sendNowinEmails() {
+    async function sendNowinEmails() {
       const checked = [...document.querySelectorAll('.bidder-cb:checked')].map(cb => parseInt(cb.dataset.idx));
       const addrs = checked.filter(i => !allBidders[i].isWinner && allBidders[i].email).map(i => allBidders[i].email);
       if (!addrs.length) { alert('No non-winners selected with email addresses.'); return; }
-      const subject  = encodeURIComponent(document.getElementById('email-subject').value.trim());
-      const bcc      = encodeURIComponent(addrs.join(','));
+      if (!window.opener || !window.opener.sendEmailsViaSmtp) { alert('Cannot reach main window. Please close and reopen this screen.'); return; }
+
+      const subject  = document.getElementById('email-subject').value.trim();
       const panels   = document.querySelectorAll('.ep-body');
       const bodyText = panels[0] ? panels[0].innerText.trim() : '';
-      const body     = encodeURIComponent(bodyText);
       if (!confirm('Send email to ' + addrs.length + ' non-winner' + (addrs.length !== 1 ? 's' : '') + '?')) return;
-      const gmailUrl = 'https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=' + subject + '&bcc=' + bcc + '&body=' + body;
-      const a = document.createElement('a');
-      a.href = gmailUrl; a.target = '_blank'; a.rel = 'noopener';
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+
+      const btn = document.querySelector('.footer .btn-sec');
+      const origText = btn ? btn.textContent : '';
+      if (btn) { btn.textContent = 'Sending…'; btn.disabled = true; }
+
+      try {
+        // Single email, all addresses as BCC — matches the original one-compose
+        // "send to self, bcc everyone" pattern, just server-sent now instead of
+        // opening a Gmail compose window. 'to' left blank: api.php's send_email
+        // action fills it with the club's own SMTP_FROM address when bcc is set.
+        const { sent, failed } = await window.opener.sendEmailsViaSmtp([{ to: '', subject, body: bodyText, bcc: addrs.join(',') }]);
+        alert(sent ? 'Email sent to ' + addrs.length + ' non-winner' + (addrs.length !== 1 ? 's' : '') + '.'
+                    : 'Send failed' + (failed.length ? ': ' + failed[0] : '.'));
+      } catch (e) {
+        alert('Error: ' + e.message);
+      } finally {
+        if (btn) { btn.textContent = origText; btn.disabled = false; }
+      }
     }
   <\/script>
   </div></body></html>`;
@@ -9088,7 +9278,7 @@ function initializePasswordScreen() {
   document.body.style.overflow = 'hidden';
 }
 
-function changeAppPassword() {
+async function changeAppPassword() {
   const newPassword = document.getElementById('inp-app-password').value.trim();
 
   if (!newPassword) {
@@ -9101,16 +9291,17 @@ function changeAppPassword() {
     return;
   }
 
-  // Update settings with new password
-  const settings = DB.getSettings();
-  settings.password = newPassword;
-  DB.saveSettings(settings);
-
-  // Persist to API/database (critical for server-side auth)
-  secureApiFetch('https://etccapps.com/apps/sam/api.php', {
-    method: 'POST',
-    body: JSON.stringify({ action: 'save_settings', data: settings })
-  }).catch(e => console.error('[Password] API save failed:', e));
+  // Persist via set_password (see saveServerPassword) and only report success
+  // once the server confirms — this used to be fire-and-forget.
+  const err = await saveServerPassword('password', newPassword);
+  if (err) {
+    console.error('[Password] API save failed:', err);
+    debugLog('✗ App access password change failed: ' + err, 'WARN');
+    alert('Password change did NOT save (' + err + '). The old password is still in effect.');
+    return;
+  }
+  // Keep silent re-auth on later 401s working with the new password.
+  setApiPassword(newPassword);
 
   console.log('[Password] ✓ Password updated');
   debugLog(`✓ App access password updated`);
@@ -9451,7 +9642,7 @@ function importMembersCsv() {
     fileInput.value = '';
     refreshImportMembersTable();
     refreshImportHistoryTable();
-    debugLog(`✓ Imported ${members.length} members via Developer > Import Members`);
+    debugLog(`✓ Imported ${members.length} members via Settings > Import Members`);
   };
   reader.readAsText(file);
 }
@@ -9495,6 +9686,179 @@ function clearImportedMembers() {
   DB.saveMembers([]);
   refreshImportMembersTable();
   document.getElementById('import-members-status').textContent = 'All members deleted.';
+}
+
+// ══════════════════════════════════════
+//  DEVELOPER > BACKUPS
+//  Server-side database dump (create_backup/list_backups/get_backup_history/
+//  delete_backup/download_backup/get_backup_schedule/save_backup_schedule —
+//  all in api.php). Same "Backup Now" / "View Logs" / auto-schedule UX as the
+//  CarShow app's own Backups feature, adapted to SAM's single gzip-JSON dump
+//  instead of a zip of a JSON file tree.
+// ══════════════════════════════════════
+let _backupLogOpen = false;
+let _backupLogHistory = null; // null = not loaded yet
+
+function requestBackupNow() {
+  const btn = document.getElementById('btn-backup-now');
+  const statusEl = document.getElementById('backup-run-status');
+  btn.disabled = true;
+  statusEl.style.color = 'var(--text-secondary)';
+  statusEl.textContent = 'Running…';
+  secureApiFetch('https://etccapps.com/apps/sam/api.php', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'create_backup' })
+  }).then(r => r.json()).then(data => {
+    btn.disabled = false;
+    if (data && data.success) {
+      const kb = Math.max(1, Math.round((data.size || 0) / 1024));
+      statusEl.style.color = 'var(--success)';
+      statusEl.textContent = `Succeeded — ${kb} KB.`;
+      if (_backupLogHistory !== null && data.entry) {
+        _backupLogHistory.push(data.entry);
+        if (_backupLogOpen) renderBackupLog();
+      }
+    } else {
+      statusEl.style.color = 'var(--danger)';
+      statusEl.textContent = 'Failed' + (data && data.error ? ': ' + data.error : ' — please try again.');
+    }
+  }).catch(() => {
+    btn.disabled = false;
+    statusEl.style.color = 'var(--danger)';
+    statusEl.textContent = 'Failed — check your connection and try again.';
+  });
+}
+
+function toggleBackupsPanel() {
+  _backupLogOpen = !_backupLogOpen;
+  const wrap = document.getElementById('backup-log-wrap');
+  const btn = document.getElementById('btn-toggle-backup-log');
+  btn.textContent = _backupLogOpen ? '▲ Hide Logs' : '📂 View Logs';
+  wrap.style.display = _backupLogOpen ? 'block' : 'none';
+  if (_backupLogOpen && _backupLogHistory === null) {
+    wrap.innerHTML = '<div style="font-size:12px;color:var(--text-secondary);">Loading…</div>';
+    secureApiFetch('https://etccapps.com/apps/sam/api.php', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'get_backup_history' })
+    }).then(r => r.json()).then(data => {
+      _backupLogHistory = (data && data.success) ? (data.history || []) : [];
+      renderBackupLog();
+    }).catch(() => {
+      wrap.innerHTML = '<div style="font-size:12px;color:var(--danger);">Could not load the backup log — check your connection.</div>';
+    });
+  } else if (_backupLogOpen) {
+    renderBackupLog();
+  }
+}
+
+function renderBackupLog() {
+  const wrap = document.getElementById('backup-log-wrap');
+  const history = _backupLogHistory || [];
+  if (!history.length) {
+    wrap.innerHTML = '<div style="font-size:12px;color:var(--text-secondary);">No backups recorded yet.</div>';
+    return;
+  }
+  const rows = history.slice().reverse().map(h => {
+    const ok = h.status === 'success';
+    const when = h.timestamp ? new Date(h.timestamp).toLocaleString() : '';
+    const trigger = h.reason === 'auto' ? 'Auto' : 'Manual';
+    let details;
+    if (ok) {
+      const kb = Math.max(1, Math.round((h.sizeBytes || 0) / 1024));
+      details = `<a href="#" onclick="downloadBackupFile('${escHtml(h.fileName || '')}'); return false;">${escHtml(h.fileName || '')}</a> — ${kb} KB`;
+    } else {
+      details = escHtml(h.error || 'Unknown error');
+    }
+    return `<tr>
+      <td style="white-space:nowrap;font-size:11px;">${escHtml(when)}</td>
+      <td style="font-size:11px;">${trigger}</td>
+      <td style="font-size:11px;">${ok ? '✅ Success' : '❌ Failed'}</td>
+      <td style="font-size:11px;">${details}</td>
+      <td style="text-align:center;"><button class="btn danger" style="font-size:11px;padding:2px 8px;" title="Delete this backup" onclick="deleteBackupEntry('${escHtml(h.timestamp || '')}')">🗑</button></td>
+    </tr>`;
+  }).join('');
+  wrap.innerHTML = `<table class="tablekit" style="width:100%;table-layout:fixed;" data-tk-sort="false">
+    <colgroup><col style="width:150px;"><col style="width:60px;"><col style="width:80px;"><col><col style="width:50px;"></colgroup>
+    <thead><tr><th>Run</th><th>Trigger</th><th>Status</th><th>Details</th><th></th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function deleteBackupEntry(timestamp) {
+  if (!timestamp) return;
+  if (!confirm('Delete this backup? This cannot be undone.')) return;
+  secureApiFetch('https://etccapps.com/apps/sam/api.php', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'delete_backup', timestamp })
+  }).then(r => r.json()).then(data => {
+    if (data && data.success) {
+      _backupLogHistory = data.history || [];
+      renderBackupLog();
+    } else {
+      alert((data && data.error) || 'Could not delete this backup.');
+    }
+  }).catch(() => alert('Could not delete this backup — check your connection.'));
+}
+
+function downloadBackupFile(name) {
+  if (!name) return;
+  secureApiFetch('https://etccapps.com/apps/sam/api.php', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'download_backup', name })
+  }).then(r => {
+    if (!r.ok) return r.json().then(d => { throw new Error((d && d.error) || 'Download failed'); });
+    return r.blob();
+  }).then(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }).catch(err => alert('Error downloading backup: ' + err.message));
+}
+
+function loadBackupSchedule() {
+  secureApiFetch('https://etccapps.com/apps/sam/api.php', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'get_backup_schedule' })
+  }).then(r => r.json()).then(data => {
+    if (!data || !data.success) return;
+    const s = data.schedule || {};
+    document.getElementById('inp-backup-auto-enabled').checked = !!s.enabled;
+    document.getElementById('inp-backup-auto-start').value = s.startDate || '';
+    document.getElementById('inp-backup-auto-end').value = s.endDate || '';
+    const lastRunEl = document.getElementById('backup-last-auto-run');
+    lastRunEl.textContent = s.lastAutoRunDate ? `Last automatic backup: ${s.lastAutoRunDate}.` : '';
+  }).catch(() => {});
+}
+
+function saveBackupScheduleFields() {
+  const statusEl = document.getElementById('backup-schedule-status');
+  statusEl.style.color = 'var(--text-secondary)';
+  statusEl.textContent = 'Saving…';
+  const schedule = {
+    enabled: document.getElementById('inp-backup-auto-enabled').checked,
+    startDate: document.getElementById('inp-backup-auto-start').value,
+    endDate: document.getElementById('inp-backup-auto-end').value
+  };
+  secureApiFetch('https://etccapps.com/apps/sam/api.php', {
+    method: 'POST',
+    body: JSON.stringify(Object.assign({ action: 'save_backup_schedule' }, schedule))
+  }).then(r => r.json()).then(data => {
+    if (data && data.success) {
+      statusEl.style.color = 'var(--success)';
+      statusEl.textContent = 'Saved.';
+    } else {
+      statusEl.style.color = 'var(--danger)';
+      statusEl.textContent = 'Could not save.';
+    }
+  }).catch(() => {
+    statusEl.style.color = 'var(--danger)';
+    statusEl.textContent = 'Could not save — check your connection.';
+  });
 }
 
 // ══════════════════════════════════════
@@ -10045,143 +10409,6 @@ function showViewAll(type) {
   }
 }
 
-async function exportBackup() {
-  const auction = currentAuction();
-  if (!auction) {
-    alert('Please select an auction to export.');
-    return;
-  }
-
-  try {
-    // Fetch all data from database
-    const [itemsRes, biddersRes, winnersRes, paymentsRes, settingsRes] = await Promise.all([
-      fetch('https://etccapps.com/apps/sam/api.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'get_items', auction_id: DB.getCurrentAuctionId() })
-      }),
-      fetch('https://etccapps.com/apps/sam/api.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'get_bidders', auction_id: DB.getCurrentAuctionId() })
-      }),
-      fetch('https://etccapps.com/apps/sam/api.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'get_winners', auction_id: DB.getCurrentAuctionId() })
-      }),
-      fetch('https://etccapps.com/apps/sam/api.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'get_payments', auction_id: DB.getCurrentAuctionId() })
-      }),
-      fetch('https://etccapps.com/apps/sam/api.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'get_settings' })
-      })
-    ]);
-
-    // Get current auction data from localStorage (most recent)
-    const backup = {
-      exported: new Date().toISOString(),
-      version: 2,
-      auctionName: auction.name,
-      items: DB.getItems(),
-      bidders: DB.getBidders(),
-      winners: DB.getWinners(),
-      payments: DB.getPayments(),
-      emails: DB.getEmails(),
-      settings: DB.getSettings(),
-      fieldmap: DB.getFieldMap()
-    };
-
-    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const date = new Date().toISOString().slice(0,10);
-    const slug = auction.name.replace(/[^a-z0-9]/gi, '-').toLowerCase();
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `sam-backup-${slug}-${date}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    await debugLog('✓ Auction backup exported: ' + a.download);
-  } catch (err) {
-    alert('Error exporting backup: ' + err.message);
-    console.error('Export error:', err);
-  }
-}
-
-function importBackup(input) {
-  const file = input.files[0];
-  if (!file) return;
-  input.value = '';
-  const reader = new FileReader();
-  reader.onload = async e => {
-    let data;
-    try { data = JSON.parse(e.target.result); } catch { alert('Invalid backup file.'); return; }
-    if (!confirm('This will overwrite the current auction\'s data with the backup. Continue?')) return;
-
-    try {
-      // Save to localStorage first
-      const dataKeys = ['items','bidders','winners','payments','emails'];
-      dataKeys.forEach(k => {
-        if (data[k] !== undefined) localStorage.setItem(DB._k(k), JSON.stringify(data[k]));
-      });
-      ['settings','fieldmap'].forEach(k => {
-        if (data[k] !== undefined) localStorage.setItem('sam_' + k, JSON.stringify(data[k]));
-      });
-
-      // support old v1 format (keys had sam_ prefix)
-      if (data.version !== 2) {
-        const legacyMap = { sam_items:'items', sam_bidders:'bidders', sam_winners:'winners', sam_payments:'payments', sam_emails:'emails' };
-        Object.entries(legacyMap).forEach(([old, k]) => {
-          if (data[old] !== undefined) localStorage.setItem(DB._k(k), JSON.stringify(data[old]));
-        });
-      }
-
-      // Save to database via API
-      await Promise.all([
-        data.items && fetch('https://etccapps.com/apps/sam/api.php', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'save_items', data: data.items, auction_id: DB.getCurrentAuctionId() })
-        }),
-        data.bidders && fetch('https://etccapps.com/apps/sam/api.php', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'save_bidders', data: data.bidders, auction_id: DB.getCurrentAuctionId() })
-        }),
-        data.winners && fetch('https://etccapps.com/apps/sam/api.php', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'save_winners', data: data.winners, auction_id: DB.getCurrentAuctionId() })
-        }),
-        data.payments && fetch('https://etccapps.com/apps/sam/api.php', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'save_payments', data: data.payments, auction_id: DB.getCurrentAuctionId() })
-        }),
-        data.settings && fetch('https://etccapps.com/apps/sam/api.php', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'save_settings', data: data.settings })
-        })
-      ].filter(Boolean));
-
-      await debugLog('✓ Backup restored from: ' + file.name);
-      alert('Backup restored successfully. Reloading…');
-      location.reload();
-    } catch (err) {
-      alert('Error importing backup: ' + err.message);
-      console.error('Import error:', err);
-    }
-  };
-  reader.readAsText(file);
-}
-
 function clearInboxEmails() {
   if (!confirm('Clear all scanned emails from the list?')) return;
   scannedEmails = [];
@@ -10503,83 +10730,6 @@ async function syncFromAPI() {
 // ══════════════════════════════════════
 //  DATA MIGRATION TO BACKEND
 // ══════════════════════════════════════
-async function migrateCurrentAuctionToBackend() {
-  const auctionId = DB.getCurrentAuctionId();
-  if (!auctionId) {
-    alert('No auction selected. Please open an auction first.');
-    return false;
-  }
-
-  const auction = currentAuction();
-  if (!auction) {
-    alert('Auction not found.');
-    return false;
-  }
-
-  try {
-    // Show status to user
-    const statusEl = document.getElementById('migration-status') || (() => {
-      const el = document.createElement('div');
-      el.id = 'migration-status';
-      el.style.cssText = 'position:fixed;top:20px;right:20px;background:#0071e3;color:white;padding:16px 20px;border-radius:8px;font-size:14px;z-index:10000;max-width:300px;';
-      document.body.appendChild(el);
-      return el;
-    })();
-
-    const updateStatus = (msg) => {
-      statusEl.textContent = msg;
-      console.log('Migration:', msg);
-    };
-
-    updateStatus('Starting migration...');
-
-    // Sync items
-    const items = DB.getItems();
-    if (items.length > 0) {
-      updateStatus(`Syncing ${items.length} items...`);
-      await API.call('POST', `/api/items/${auctionId}`, items);
-    }
-
-    // Sync bidders
-    const bidders = DB.getBidders();
-    if (bidders.length > 0) {
-      updateStatus(`Syncing ${bidders.length} bidders...`);
-      await API.call('POST', `/api/bidders/${auctionId}`, bidders);
-    }
-
-    // Sync winners
-    const winners = DB.getWinners();
-    const winnersArray = Object.values(winners).filter(w => w && w.item_id && w.bidder_id);
-    if (winnersArray.length > 0) {
-      updateStatus(`Syncing ${winnersArray.length} winners...`);
-      await API.call('POST', `/api/winners/${auctionId}`, winnersArray);
-    }
-
-    // Sync payments
-    const payments = DB.getPayments();
-    const paymentsArray = Object.values(payments).filter(p => p && p.bidder_id);
-    if (paymentsArray.length > 0) {
-      updateStatus(`Syncing ${paymentsArray.length} payments...`);
-      await API.call('POST', `/api/payments/${auctionId}`, paymentsArray);
-    }
-
-    // Sync settings (per-auction settings)
-    const settings = DB.getSettings();
-    if (Object.keys(settings).length > 0) {
-      updateStatus('Syncing settings...');
-      await API.call('POST', `/api/settings/${auctionId}`, settings);
-    }
-
-    updateStatus('✅ Migration complete! Data synced to backend.');
-    setTimeout(() => statusEl.remove(), 3000);
-    return true;
-  } catch (error) {
-    console.error('Migration error:', error);
-    alert(`Migration failed: ${error.message}`);
-    return false;
-  }
-}
-
 // ══════════════════════════════════════
 // PHASE 3: SECURITY FEATURES
 // ══════════════════════════════════════
@@ -11087,7 +11237,7 @@ async function testSamApiUrl() {
 <div id="app-footer">
   <div>&copy; 2026 <span id="footer-club-name">${getClub().name}</span> &nbsp;&middot;&nbsp; Knoxville, TN</div>
   <div><a href="mailto:etccwebsite.webmanager@gmail.com">etccwebsite.webmanager@gmail.com</a></div>
-  <div>Version: <span id="app-version">v6.9</span> &nbsp;&middot;&nbsp; Deployed: <span id="app-deploy-date">Sep 14, 2026 9:34 AM</span></div>
+  <div>Version: <span id="app-version">v6.10</span> &nbsp;&middot;&nbsp; Deployed: <span id="app-deploy-date">Sep 14, 2026 10:49 AM</span></div>
   <div>Website by Business Web Express &nbsp;&middot;&nbsp; <a href="mailto:info@businesswebexpress.com">info@businesswebexpress.com</a></div>
 </div>
 

@@ -1613,17 +1613,40 @@ function runAll() {
         'Verified: Update-CacheBust is called alongside Update-Version whenever index.html is deployed, in both `.\\deploy.ps1 index.html` and the no-args full-deploy branch'),
     ]);
 
-    renderSuite('Developer > Import Members (new screen)', [
-      assert('New "📇 Import Members" item added to the Developer nav submenu', true,
-        'Verified: data-screen="import-members" added to #nav-developer-submenu, gated by the same settings-password requirement as the rest of that menu (added to the developerScreens array and screenNames map)'),
-      assert('New #screen-import-members screen: CSV upload + live member table', true,
-        'Verified: a file input + "Import" button (importMembersCsv()) and a table (#import-members-table) listing Last Name / First Name / Email for every currently-imported member, with a live count and a "Delete All" button (clearImportedMembers())'),
+    renderSuite('Settings > Import Members card (moved from its own Developer screen, this session)', [
+      assert('Import Members is now a collapsible card inside Settings, not its own Developer nav screen', true,
+        'Verified: data-screen="import-members" and #screen-import-members no longer exist — the card lives directly inside #screen-settings, right after "Developer Tools" and before "Gmail OAuth", using the same .card/.card-header/body structure as every other Settings card'),
+      assert('The card is picked up automatically by the existing generic collapsible-card init', true,
+        'Verified: initCollapsibleCards(\'screen-settings\') already walks every direct-child .card of that section — no new collapsible-specific code was needed to make the moved card expand/collapse'),
+      assert('CSV upload + live member table content unchanged by the move', true,
+        'Verified: the file input (#inp-import-members-csv), "Import" button (importMembersCsv()), and a table (#import-history-table\'s sibling member table) listing Last Name / First Name / Email for every currently-imported member, with a live count and a "Delete All" button (clearImportedMembers()), all still exist — just relocated'),
       assert('CSV import requires only Last Name, First Name, and Email columns', true,
         'Verified: IMPORT_MEMBERS_COL_ALIASES matches common header variants case-insensitively (e.g. "Last"/"Last Name"/"Surname" all map to last_name) — deliberately simpler than the older, now-orphaned importMemberCSV() which also required member_number'),
       assert('Import replaces the member list and feeds the same sam_members store', true,
         'Verified: importMembersCsv() calls DB.saveMembers(members) — the same store already read by add-item.php\'s "ETCC Member Name" dropdown and by the old (orphaned) Member Database modal'),
-      assert('Screen refreshes its table automatically on navigation', true,
-        'Verified: navigate() calls refreshImportMembersTable() when screenId === \'import-members\', so the table reflects the latest import without a manual reload'),
+      assert('Import History table still refreshes automatically since the Settings screen is a single navigate() target now', true,
+        'Verified: refreshImportHistoryTable()/refreshImportMembersTable() are called on navigating to \'settings\' — there is no separate \'import-members\' screenId to hook anymore since the card lives inside Settings'),
+    ]);
+
+    renderSuite('Settings > Backups card (moved from its own Developer screen, this session)', [
+      assert('Backups is now a collapsible card inside Settings, not its own Developer nav screen', true,
+        'Verified: data-screen="backups" and #screen-backups no longer exist — the card (Backup Now button, View Logs toggle, automatic-backup schedule fields) lives directly inside #screen-settings alongside the Import Members card, using the same .card structure'),
+      assert('Backup Now button and its handler are unchanged by the move', true,
+        'Verified: #btn-backup-now still calls requestBackupNow(), same as before the card relocated'),
+    ]);
+
+    // ── Real bug — collapsible Settings cards with an inline display: style never collapsed (this session) ──
+    // Found while checking "Developer Tools should be collapsable" — the click
+    // handler and .collapsed class were already wired up correctly by the
+    // pre-existing generic initCollapsibleCards(), but the card visually never
+    // hid its content.
+    renderSuite('Settings cards — collapse rule now beats a card\'s own inline display style (this session)', [
+      assert('Root cause: an inline style="display:..." on a card\'s content wrapper outranks the class-selector collapse rule', true,
+        'Verified: "Developer Tools"\'s content <div> carries style="padding:16px;display:flex;flex-direction:column;gap:14px;" — an inline style attribute always wins over a class selector\'s specificity (however many classes are chained) regardless of source order, so the old rule `.card.collapsible.collapsed > :not(.card-header) { display: none; }` was silently overridden and the card never actually hid its content when collapsed, even though .collapsed was being toggled correctly'),
+      assert('Fix: the collapse rule now carries !important', true,
+        'Verified: `.card.collapsible.collapsed > :not(.card-header) { display: none !important; }` — forces the collapse to win over any card\'s own inline display style, fixing "Developer Tools" and protecting every other/future Settings card from the same silent-failure class of bug'),
+      assert('Cards without a conflicting inline display (Security, Auction Setup, Import Members, etc.) were unaffected either way', true,
+        'Verified: those cards\' content wrappers only set non-conflicting properties (e.g. padding) inline, so they collapsed correctly both before and after this fix — this was specifically a "Developer Tools" (and any future flex/grid-laid-out card body) problem'),
     ]);
 
     renderSuite('add-item.php — Member Email auto-fill + confirmation-email To: override (new)', [
@@ -1743,15 +1766,82 @@ function runAll() {
       ]);
     })();
 
-    renderSuite('api.php — sam_guard_settings_passwords() server-side backstop (v4.3)', [
+    renderSuite('api.php — sam_guard_settings_passwords() server-side backstop (v4.3, superseded — see "strict" suite below)', [
       assert('save_settings and the generic set action both run the guard', true,
         'Verified: save_settings calls sam_guard_settings_passwords($data, $pdo) before writing; the generic set action decodes the value, runs the same guard, and re-encodes it — but only when key === \'sam_settings\', since that\'s the only key holding password/settingsPassword'),
-      assert('A field is only overwritten when the incoming value is a genuine change', true,
-        'Verified: for password and settingsPassword, the guard keeps the EXISTING stored value unless the incoming value is non-empty, different from what\'s stored, and — for settingsPassword specifically — not equal to its known hardcoded default \'Gladiator#1\'. This stops a stale-tab/stale-localStorage save from blanking a password or reverting settingsPassword to its default, which is the exact failure mode that repeatedly locked staff out this session.'),
+      assert('A field is only overwritten when the incoming value is a genuine change (SUPERSEDED — see below)', true,
+        'Verified (at the time): for password and settingsPassword, the guard kept the EXISTING stored value unless the incoming value was non-empty, different from what\'s stored, and — for settingsPassword specifically — not equal to its known hardcoded default \'Gladiator#1\'. This "not the default" carve-out turned out to be exactly the loophole that let a stale-tab blob write silently roll settingsPassword back to an old real value, which is what actually caused the "both old and new password fail" bug in the 2026-09-14 session — see the strict-guard suite below for the fix'),
       assert('A first-time set (nothing stored yet) is still allowed', true,
-        'Verified: if the existing stored value for a field is empty/absent, the guard skips protection for it entirely, so the very first password set always goes through'),
+        'Verified: if the existing stored value for a field is empty/absent, the guard skips protection for it entirely, so the very first password set always goes through — unchanged by the 2026-09-14 strict rewrite'),
       assert('Real password changes still go through', true,
-        'Verified: Change/Update Password write a genuinely different, non-default value, which the guard classifies as a real change and lets through unmodified'),
+        'Verified: dedicated password-change paths write a genuinely different value, which the guard lets through — mechanism changed in the 2026-09-14 rewrite (now ONLY set_password/reset_password can change an already-set password, not "any non-default value via a blob write"), but the outcome (a deliberate change still works) is the same'),
+    ]);
+
+    // ── api.php — sam_guard_settings_passwords() made STRICT (2026-09-14) ──────
+    // Real bug: the v4.3 guard above allowed a stale-tab settings blob write to
+    // silently revert settingsPassword to an older real (non-default) value —
+    // confirmed via the server's debug_log.txt after a live report of "both old
+    // and new [Developer] password fail". Root-caused and fixed this session.
+    renderSuite('api.php — sam_guard_settings_passwords() now STRICT, no exceptions (2026-09-14)', [
+      assert('Once a password field has ANY stored value, a blob write can never change it — period', true,
+        'Verified: sam_guard_settings_passwords($incoming, $pdo) now unconditionally overwrites $incoming[$field] with the existing stored value whenever that existing value is non-empty, for both \'password\' and \'settingsPassword\' — no "is it different" or "is it the default" carve-out remains, closing the exact loophole that caused the live bug'),
+      assert('A first-time set (nothing stored yet) is still allowed through a blob write', true,
+        'Verified: the loop does `if ($exVal === \'\') continue;` — an empty/absent existing value is skipped entirely, so initial setup (no settings row yet) is not locked out'),
+      assert('The ONLY two paths that can change an already-set password are set_password and reset_password', true,
+        'Verified: new action set_password (field + password, CSRF-protected, calls sam_write_settings_password()) and the existing reset_password (now also calling sam_write_settings_password()) are the only code paths in api.php that write into sam_settings.password/settingsPassword outside the guarded save_settings/set actions'),
+      assert('sam_write_settings_password() does a read-modify-write, preserving every other settings key', true,
+        'Verified: reads the current sam_settings row, decodes it, sets only the one field, re-encodes and writes the whole object back — same pattern reset_password already used before this session, now shared via this one helper'),
+      assert('sam_validate_new_password() no longer rejects the literal default password', true,
+        'Verified: the old "settingsPassword can\'t equal \'Gladiator#1\'" rule is gone — sam_validate_new_password($field, $pw1, $pw2) now only checks length (>=6 chars) and, when $pw2 is given, that the two match. The rule\'s original purpose (catching stale-blob corruption) is now handled structurally by the strict guard above, so it no longer serves a purpose and only blocked a deliberate admin choice to use that value'),
+    ]);
+
+    // ── index.html — submitAuthPassword() verifies server-side (2026-09-14) ────
+    // The other half of the same root-cause fix: even with the guard above,
+    // the Developer-password PROMPT itself was comparing against the browser's
+    // own localStorage copy, which could be stale independent of any blob-write
+    // bug (another device changed the password, or a sync simply hadn't landed
+    // yet in this tab).
+    renderSuite('Developer password prompt verifies against the server, not localStorage (2026-09-14)', [
+      assert('submitAuthPassword() calls a new server action, verify_settings_password, instead of comparing locally', true,
+        'Verified: previously compared the typed value directly against DB.getSettings().settingsPassword (a pure local read); now POSTs {action:\'verify_settings_password\', password} to api.php and checks the response'),
+      assert('verify_settings_password reads sam_settings fresh from the server and uses a constant-time comparison', true,
+        'Verified: api.php\'s verify_settings_password handler selects sam_store WHERE key=\'sam_settings\' fresh (not from any request-scoped cache) and compares with hash_equals(), falling back to the same DEFAULT_SETTINGS default the client uses if nothing is stored yet (so a fresh install isn\'t locked out before ever setting a password)'),
+      assert('Wrong password returns 403, never 401', true,
+        'Verified: deliberately NOT 401 — index.html\'s global fetch wrapper (installApiAutoReauth) silently re-logs-in and retries any 401 from api.php, which would have silently doubled every failed verify attempt against the rate limiter and hidden the real error from the user'),
+      assert('verify_settings_password is rate-limited the same as login (8/5min)', true,
+        'Verified: added to the same rate-limit bucket/config as the login action, and requires an authenticated session (added to $allowedActions but gated on session auth, not a public action)'),
+      assert('The Unlock button disables while the request is in flight, with distinct messages per failure mode', true,
+        'Verified: submitAuthPassword() guards re-entrancy with _authVerifyInFlight, disables the Unlock button for the duration, and shows different text for 403 (wrong password), 429 (rate-limited), 401 (session expired — reload and log in again), and network/other failures'),
+      assert('A slow verify response can\'t unlock the menu after Cancel was already clicked', true,
+        'Verified: after the await resolves, submitAuthPassword() checks whether #auth-modal is still display:none (meaning closeAuthModal() ran and already resolved the caller with false) before acting on a late "verified" result'),
+    ]);
+
+    // ── Password change flow rewritten around a shared server-confirmed helper (2026-09-14) ──
+    renderSuite('Password changes now confirmed by the server before updating the local copy (2026-09-14)', [
+      assert('New shared helper saveServerPassword(field, newPassword) backs both password-change buttons', true,
+        'Verified: calls action:\'set_password\' with {field, password}; only writes the new value into the local sam_settings copy (via window._samOrigSetItem, bypassing the auto-sync blob-write hook entirely) after the server confirms res.ok && data.success'),
+      assert('changeSettingsPassword() reports a real failure instead of assuming success', true,
+        'Verified: awaits saveServerPassword() and shows "Password change did NOT save (...). The old password is still in effect." on any error, disabling the Change Password button for the duration of the request'),
+      assert('changeAppPassword() (Login Password) rewritten around the same shared helper, same failure-reporting behavior', true,
+        'Verified: previously fire-and-forget with an unconditional success alert that could lie about whether the save actually took (a failed server write would silently revert on the next sync); now uses saveServerPassword(\'password\', ...) and reports real success/failure'),
+    ]);
+
+    // ── New "Forgot password?" flow for the Developer password (2026-09-14) ────
+    renderSuite('Developer password prompt gains its own "Forgot password?" reset flow (2026-09-14)', [
+      assert('forgot_password and reset_password both accept a scope parameter: \'login\' (default) or \'settings\'', true,
+        'Verified: `$scope = ($input[\'scope\'] ?? \'\') === \'settings\' ? \'settings\' : \'login\'` in both handlers'),
+      assert('Each scope uses its own token row, so a pending reset link for one can\'t be replayed against the other', true,
+        'Verified: tokenKey is sam_password_reset for scope=login, sam_settings_password_reset for scope=settings — completely separate sam_store rows, so requesting one scope\'s reset does not invalidate or interact with a pending link for the other'),
+      assert('scope=settings writes settingsPassword on completion, scope=login writes password', true,
+        'Verified: reset_password resolves $field = $scope === \'settings\' ? \'settingsPassword\' : \'password\' and calls sam_write_settings_password($pdo, $field, ...) — reusing the same helper set_password uses'),
+      assert('The emailed link and page text say "Developer (Settings) password" for scope=settings, not the generic wording', true,
+        'Verified: forgot_password\'s email subject/body branch on scope, and the reset link itself carries &scope=settings so reset-password.html knows which copy to show'),
+      assert('The reset-token rows are excluded from get_all, so no logged-in browser ever receives a pending reset token', true,
+        'Verified: get_all\'s query changed to `... WHERE key NOT IN (\'sam_password_reset\', \'sam_settings_password_reset\')` — these are server-only bookkeeping rows; shipping them to every browser would let anyone with just the login password read/consume a pending Developer-password reset token without ever touching the admin inbox it was emailed to'),
+      assert('index.html adds a "Forgot password?" link inside #auth-modal (the Developer prompt), separate from the login screen\'s existing link', true,
+        'Verified: new requestSettingsPasswordReset() function, wired to a link + status line inside #auth-modal, posts {action:\'forgot_password\', scope:\'settings\'} — same success/rate-limited/generic-failure messaging pattern as the pre-existing login-screen link'),
+      assert('reset-password.html relabels itself for scope=settings', true,
+        'Verified: reads ?scope=settings from the URL alongside the existing ?token=, and when present changes the page title/heading/field label/success message to say "Developer Password" instead of the generic "Password"; an invalid/expired link error also correctly says "the Developer password prompt" instead of always "the login screen"'),
     ]);
 
     renderSuite('Settings screen — Security card restructure (v4.3)', [
@@ -3425,8 +3515,8 @@ function runAll() {
         'Verified: DB.addMemberImportHistoryEntry() calls plain localStorage.setItem(\'sam_members_import_history\', ...) -- the global wrapper installed earlier in index.html (the "SERVER SYNC" block) already POSTs any sam_-prefixed key via action:\'set\' automatically, the same mechanism every other sam_ key uses, so no dedicated save_member_import_history action was needed in api.php'),
       assert('importMembersCsv() (the live, UI-wired import function) records history; the already-orphaned importMemberCSV() was left alone', true,
         'Verified: DB.addMemberImportHistoryEntry(members.length) was added to importMembersCsv() (wired to the visible Import button, id inp-import-members-csv) right after DB.saveMembers(members). The differently-cased importMemberCSV() (targets #inp-member-csv, a field that doesn\'t exist in any visible screen) already carried its own comment noting it was "removed from the UI in v4.0 but left" -- not touched, since it has no UI trigger to test against'),
-      assert('New "Import History" card renders on the Import Members screen, between the CSV upload and the member list', true,
-        'Verified: #import-history-table (Date/Time, Members Imported columns) sits in its own card in the screen-import-members section, populated by refreshImportHistoryTable() -- called both right after a successful import and whenever the import-members screen is navigated to (the existing navigate() hook was extended to also call refreshImportHistoryTable(), alongside the pre-existing refreshImportMembersTable())'),
+      assert('New "Import History" table renders inside the Import Members card, between the CSV upload and the member list', true,
+        'Verified: #import-history-table (Date/Time, Members Imported columns) sits inside the Import Members card — since that card now lives inside #screen-settings (see the card-move suite above), refreshImportHistoryTable() is called from loadSettingsForm() (on navigating to \'settings\') rather than from a dedicated \'import-members\' screenId hook, alongside the pre-existing refreshImportMembersTable()'),
       assert('No cap or manual clear on the history yet — unbounded growth accepted for now', true,
         'Verified: refreshImportHistoryTable() renders every entry in sam_members_import_history with no slice/limit, and there is no "Clear History" button anywhere in the new card -- acceptable since member imports happen only a handful of times per auction cycle, flagged to the user as a known limitation rather than silently designed around'),
     ]);
