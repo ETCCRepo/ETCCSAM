@@ -1331,8 +1331,25 @@ function runAll() {
         'Verified: navigate() developerScreens = [\'settings\',\'config\',\'changelog\'] all check isSettingsAuthenticated() before displaying, not just the submenu visibility'),
       assert('Logout destroys the server session and clears cached credentials', true,
         'Verified: logoutApp() posts action:\'logout\' to api.php, then SessionManager.clearSession() + sessionStorage.removeItem(\'sam_api_pw\') so installApiAutoReauth cannot silently log back in'),
-      assert('Logout redirects to the club\'s main site', true,
-        'Verified: window.location.href = https://www.etccwebsite.com/content.aspx?page_id=0&club_id=313652'),
+    ]);
+
+    // ── Real bug — Logout navigated away to an external site instead of returning to SAM's own login screen (2026-09-14) ──
+    // "developer logout should return to main page and not exit app" — logout
+    // previously did window.location.href to the club's external website,
+    // which reads as leaving the app entirely rather than just signing out.
+    renderSuite('Logout returns to SAM\'s own login screen instead of leaving the app (2026-09-14)', [
+      assert('logoutApp() no longer navigates to the external club website', true,
+        'Verified: the old window.location.href = https://www.etccwebsite.com/... line is gone from logoutApp()'),
+      assert('Instead, logoutApp() reveals #password-screen (the in-app login gate) and hides #maintenance-screen', true,
+        'Verified: mirrors the same show/hide logic initializeEntryGate() uses at boot — passwordScreen.classList.remove(\'hidden\'), maintenanceScreen.classList.add(\'hidden\'), document.body.style.overflow = \'hidden\', password input cleared and refocused'),
+      assert('passwordAuthenticated is reset to false and the maintenance bypass flag is revoked', true,
+        'Verified: passwordAuthenticated = false and sessionStorage.removeItem(\'sam_maint_ok\') — without clearing the bypass flag, initializeEntryGate()\'s bypassed check would let a re-visit skip the login gate entirely'),
+      assert('The Developer password gate is also relocked on logout', true,
+        'Verified: window._settingsAuthAt = 0, and #nav-developer-submenu is hidden with aria-expanded reset — logging out fully resets both auth layers, not just the main login'),
+      assert('Real bug found and fixed: logging back in after Developer logout returned to the Developer menu, not Home', true,
+        'Verified: logoutApp() now calls `await navigate(\'home\')` BEFORE showing the login gate — previously the underlying screen (often deep in Settings/Config under Developer) was left as-is, and since navigate() only runs on an explicit nav click, re-authenticating just revealed that same stale screen again instead of the main app'),
+      assert('The mobile nav drawer is closed on logout too', true,
+        'Verified: document.body.classList.remove(\'nav-open\') — prevents the drawer reappearing open on top of the login screen if it had been open when Logout was clicked'),
     ]);
 
     // ── Home Screen Club Branding Banner Removed (v3.12) ─────────────────────
@@ -1655,6 +1672,90 @@ function runAll() {
         'Verified: both regexes changed from /^backup_[0-9\\-_]+\\.sql(\\.gz)?$/ to /^backup_[0-9\\-_]+\\.(zip|sql(\\.gz)?)$/ — a .zip filename now passes the same validation a legacy .sql/.sql.gz name already did'),
       assert('Verified live: a real "Backup Now" run produced a genuine, openable .zip file', true,
         'Confirmed by the user directly — not just by code inspection — that the resulting backup file has a .zip extension and opens as a real archive'),
+    ]);
+
+    // ── Real bug — 'auctions' table was never included in backups at all (2026-09-14) ──
+    // Found while building restore-from-backup: items/bidders/winners/payments
+    // all carry an auction_id foreign key, but the auctions table itself
+    // (id/name/status) was missing from the original SAM_BACKUP_TABLES list —
+    // a restore could put rows back with auction_id values that resolved to
+    // nothing, since the auction they belonged to was never backed up.
+    renderSuite('security-helpers.php — auctions table added to backup/restore scope (2026-09-14)', [
+      assert('SAM_BACKUP_TABLES now includes \'auctions\', not just items/bidders/winners/payments/settings/audit_log/sam_store', true,
+        'Verified: define(\'SAM_BACKUP_TABLES\', [\'auctions\', \'items\', \'bidders\', \'winners\', \'payments\', \'settings\', \'audit_log\', \'sam_store\']) — createDatabaseBackup() reads this constant (its old local $tables array was replaced by it) so backup and restore can never drift on which tables are covered'),
+      assert('A backup made before this fix still restores fine — it just won\'t have real auction names', true,
+        'Verified: sam_backup_auction_ids() and restoreDatabaseBackup() both check empty($backup[\'auctions\']) before using it, falling back to bare auction_id strings scraped from items/bidders/winners/payments — an older-format backup degrades gracefully rather than erroring'),
+    ]);
+
+    // ── New feature — Restore from a specific backup, whole-database or one auction (2026-09-14) ──
+    // Requested: "add option to restore from a specific backup" — then refined
+    // to support restoring just ONE auction's data, once it became clear the
+    // app's items/bidders/winners/payments tables are shared across ALL
+    // auctions (each row scoped by auction_id), so a naive restore would wipe
+    // every auction, not just the one the admin cared about.
+    renderSuite('Backups — Restore from a specific backup, whole-DB or one auction (2026-09-14)', [
+      assert('New server action restore_backup identifies the backup by history timestamp, same convention as delete_backup', true,
+        'Verified: api.php looks up the history entry by input.timestamp, requires status===\'success\', resolves fileName, validates it against the same backup_<...>.(zip|sql(.gz)?) regex as delete/download_backup before touching anything'),
+      assert('restore_backup is CSRF-protected and requires an authenticated session, same as other destructive actions', true,
+        'Verified: added to both $allowedActions and $csrfProtectedActions in api.php, alongside delete_backup/clear_auctions/etc.'),
+      assert('restoreDatabaseBackup() reads .zip (via ZipArchive), .sql.gz (gzuncompress), and legacy .sql transparently', true,
+        'Verified: new sam_read_backup_file() branches on the file extension, locates the JSON payload by its opening brace (robust to header-comment edits), and json_decodes it back into the same $backup[\'table\']=>[rows] shape createDatabaseBackup() wrote'),
+      assert('A whole-database restore (no auction_id) replaces every SAM_BACKUP_TABLES table wholesale', true,
+        'Verified: when $auctionId is null, restoreDatabaseBackup() does DELETE FROM `$table` (no WHERE) then re-inserts every row from the backup, for auctions/items/bidders/winners/payments/settings/audit_log/sam_store'),
+      assert('A per-auction restore (auction_id given) only touches that one auction\'s rows in auctions/items/bidders/winners/payments — nothing else', true,
+        'Verified: SAM_AUCTION_SCOPED_TABLES maps each scopable table to its identifying column (auction_id for items/bidders/winners/payments, id for auctions itself); scoped mode filters $backup[table] to rows matching $auctionId and does DELETE FROM `$table` WHERE `$idCol` = ? instead of an unscoped DELETE — settings/audit_log/sam_store (global, not per-auction) are never touched by a scoped restore'),
+      assert('INSERT columns come from each row\'s own keys, not a hardcoded schema — same pattern as the rest of this feature', true,
+        'Verified: $cols = array_keys($rows[0]) per table, so a schema change between backup-time and restore-time doesn\'t silently break the INSERT column list'),
+      assert('A fresh whole-database safety backup is ALWAYS taken before restoring, regardless of scope', true,
+        'Verified: restoreDatabaseBackup() calls createDatabaseBackup() unconditionally as its first step and aborts (throwing, no changes made) if that safety backup itself fails — a scoped restore still gets the same whole-DB safety net as a full restore'),
+      assert('The pre-restore safety snapshot gets its own visible history entry, not just an orphaned file on disk', true,
+        'Verified: api.php\'s restore_backup handler calls samAppendBackupHistory() with reason:\'pre-restore\' for the safety file BEFORE appending the restore\'s own \'restore\' entry — both rows are visible and restorable from the same Backup Log UI'),
+      assert('The restore itself runs inside a transaction — a failure partway through rolls back, not leaving a half-old/half-new database', true,
+        'Verified: $pdo->beginTransaction()/commit() wraps the per-table loop; any Exception triggers $pdo->rollBack() before re-throwing'),
+      assert('Real bug found and fixed: FOREIGN_KEY_CHECKS must be disabled during restore', true,
+        'Verified live: a real restore failed with SQLSTATE[23000] — emails.auction_id has a foreign key into auctions(id), and emails is NOT part of the backup/restore scope, so deleting an auctions row (to reinsert the same id fresh) tripped the constraint even though the same id comes right back moments later. Fixed with SET FOREIGN_KEY_CHECKS=0 before the per-table loop and =1 after — same technique mysqldump itself uses. Explicitly reset in BOTH the success and failure paths, since it\'s a per-connection session setting, not part of the transaction a ROLLBACK would undo'),
+      assert('New read-only action get_backup_auctions lists a backup\'s auctions with real names + item counts for the Restore UI', true,
+        'Verified: given a timestamp, resolves the file the same way restore_backup does, reads it via sam_read_backup_file(), and returns sam_backup_auction_ids($backup) — real names from the backup\'s own \'auctions\' rows when present, falling back to bare ids for an older-format backup'),
+      assert('A restore\'s log-row "Details" shows a resolved auction NAME, not a raw auction_id, once available', true,
+        'Verified live: after a real restore failed to show a name (only the raw id, since the request had run before this last fix), restoreDatabaseBackup() was updated to resolve scopeName from the backup\'s own auctions rows and return it; api.php stores it on the history entry; renderBackupLog() prefers h.scopeName over h.scope for display'),
+      assert('Restore is only offered from the log for rows that still have a real file on disk', true,
+        'Verified: renderBackupLog()\'s canRestore check requires status===success, reason !== \'restore\' (a restore record has no file of its own — see next assertion), and a non-empty fileName'),
+      assert('A "restore" history row itself shows what was restored, not a re-restorable file link', true,
+        'Verified: for reason===\'restore\', the Details column reads "Restored from <file> [auction: <name>] (counts...)" as plain text — the SOURCE file it names may since have been purged, so no download/restore action is offered on that row itself'),
+    ]);
+
+    // ── Restore UI rebuilt as a proper modal, matching VetteFest's own restore-modal design (2026-09-14) ──
+    // Replaced the original prompt()/confirm()-based flow with a real modal
+    // (#restore-backup-modal-host) after the user pointed at a screenshot of
+    // VetteFest's equivalent feature and asked to match it — including its
+    // inline Developer-password re-confirmation field.
+    renderSuite('Restore-from-backup UI rebuilt as a modal (2026-09-14)', [
+      assert('New #restore-backup-modal-host container, rendered entirely by JS since content depends on the clicked backup', true,
+        'Verified: static empty <div id="restore-backup-modal-host"> added inside the Backups card; renderRestoreModal() builds the full overlay+dialog markup from _restoreModal state and injects it, same inline-style modal convention #item-edit-modal already uses in this codebase'),
+      assert('Modal shows the backup filename, a scope <select> (Everything or one named auction), and a live-updating warning', true,
+        'Verified: options are built from get_backup_auctions\' results; onchange="setRestoreScope(this.value)" re-renders so the red warning paragraph updates immediately to name exactly what the newly-selected scope replaces, without a page reload'),
+      assert('A backup predating auction-name tracking still shows a self-explanatory option label in the dropdown, not a raw id', true,
+        'Verified: same name===id fallback text as the old prompt() version (\'name unavailable — backup predates auction-name tracking\'), just rendered as a <select><option> instead of a prompt() list line'),
+      assert('Close (✕), Cancel, and click-outside-the-dialog all close the modal identically', true,
+        'Verified: closeRestoreModal() sets _restoreModal = null and empties the host; the backdrop\'s onclick checks event.target===this so a click inside the dialog itself doesn\'t bubble up and close it'),
+      assert('The Developer password field must be filled before Yes, Restore proceeds', true,
+        'Verified: performRestoreModal() shows an inline error and re-renders (not an alert()) if the password field is empty, without ever calling the server'),
+      assert('Yes, Restore disables both buttons and shows "Restoring…" while the request is in flight', true,
+        'Verified: _restoreModal.running gates both button disabled attributes and the Yes button\'s label; renderRestoreModal() re-renders immediately on click before the fetch resolves'),
+      assert('A wrong password (or any other failure) shows inline in the modal and lets the admin retry, rather than closing it', true,
+        'Verified: on a non-success response, _restoreModal.running is reset and _restoreModal.error is set to the server\'s message, then renderRestoreModal() re-renders the SAME modal with that error shown — the modal only closes on genuine success (followed immediately by location.reload())'),
+    ]);
+
+    // ── Real bug fix — restore_backup requires re-verifying the Developer password server-side (2026-09-14) ──
+    renderSuite('restore_backup re-verifies the Developer password server-side, not just via the UI gate (2026-09-14)', [
+      assert('New shared helper sam_get_settings_password($pdo) centralizes the stored-password lookup + default fallback', true,
+        'Verified: extracted from verify_settings_password\'s inline logic (reads sam_settings.settingsPassword fresh from sam_store, falls back to the same \'Gladiator#1\' default DEFAULT_SETTINGS uses when nothing is stored yet) — verify_settings_password itself was refactored to call this helper instead of duplicating the lookup'),
+      assert('restore_backup requires input.settings_password and verifies it with hash_equals() before doing anything else', true,
+        'Verified: the check runs as the very first thing inside restore_backup\'s try block, before even looking up the backup history entry — a wrong or missing password returns 403 "Incorrect Developer password." and performs zero reads/writes beyond the password check itself'),
+      assert('A failed password check is logged as a security event, same as a failed Developer-prompt attempt', true,
+        'Verified: logSecurityEvent(\'SETTINGS_AUTH_FAILURE\', ...) fires on a bad restore_backup password, matching the exact event type verify_settings_password itself logs on a bad Developer-prompt attempt'),
+      assert('This is a genuine second factor, not just re-checking the same session the Developer menu already gated', true,
+        'Verified: reaching the Backups card at all already requires a verified Developer-password session (isSettingsAuthenticated(), 30-min window) — this check independently re-verifies the actual password value against the server on every single restore attempt, regardless of how long that session has been open, so a workstation left unlocked with Settings open still can\'t have a restore triggered without re-typing the real password'),
     ]);
 
     // ── Real bug — collapsible Settings cards with an inline display: style never collapsed (this session) ──

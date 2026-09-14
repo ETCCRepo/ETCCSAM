@@ -21,8 +21,8 @@
        Screen") — it only looks at apple-touch-icon. Kept in sync with the same
        Club Branding favicon by updateFavicon() below. -->
   <link rel="apple-touch-icon" id="apple-touch-icon-link" href="Images/ETCClogoWhiteBackground.png" />
-  <link rel="stylesheet" href="css/table.css?v=1789383419" />
-  <link rel="stylesheet" href="css/toolbar.css?v=1789383419" />
+  <link rel="stylesheet" href="css/table.css?v=1789412645" />
+  <link rel="stylesheet" href="css/toolbar.css?v=1789412645" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1930,7 +1930,7 @@
       <div class="card" style="margin-bottom:20px;" data-settings-autosave="off">
         <div class="card-header">Backups</div>
         <div style="padding:16px;">
-          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 16px;">Backs up the app's live database (items, bidders, winners, payments, settings, audit log) into a dated file kept on the server, for point-in-time recovery independent of the live MySQL data. Only the newest 30 backup files are kept on disk; the log is kept permanently, even for a purged or failed run.</p>
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 16px;">Backs up the app's live database (auctions, items, bidders, winners, payments, settings, audit log) into a dated .zip file kept on the server, for point-in-time recovery independent of the live MySQL data. Only the newest 30 backup files are kept on disk; the log is kept permanently, even for a purged or failed run. Each entry in the log below can be restored — either the whole database, or just one auction — a fresh safety backup is always taken automatically right before restoring.</p>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
             <button class="btn primary" id="btn-backup-now" onclick="requestBackupNow()">💾 Backup Now</button>
             <span id="backup-run-status" style="font-size:12px;color:var(--text-secondary);"></span>
@@ -1957,6 +1957,11 @@
           <div id="backup-last-auto-run" style="margin-top:8px;font-size:12px;color:var(--text-secondary);"></div>
         </div>
       </div>
+
+      <!-- Restore-from-backup modal — content built entirely by JS
+           (renderRestoreModal() in the Backups script below) since it depends
+           on which backup was clicked and how many auctions it contains. -->
+      <div id="restore-backup-modal-host"></div>
 
       <!-- Gmail credentials -->
       <div class="card" style="margin-bottom:20px;">
@@ -2417,8 +2422,8 @@
 </div>
 
 <!-- Scripts -->
-<script src="js/table.js?v=1789383419"></script>
-<script src="js/toolbar.js?v=1789383419"></script>
+<script src="js/table.js?v=1789412645"></script>
+<script src="js/toolbar.js?v=1789412645"></script>
 <script>
 (function() {
   const _origInit = PageToolbar.init.bind(PageToolbar);
@@ -2652,17 +2657,42 @@ function getApiPassword() {
 // sends the user back to the club's main site — same destination the old
 // "Return to Dashboard" nav link used.
 async function logoutApp() {
+  // Return to Home underneath the login gate — otherwise navigate() never
+  // runs again until after re-login, and the user comes back to whatever
+  // screen (often deep in the Developer menu) was active when they logged
+  // out, instead of the main app.
+  try {
+    await navigate('home');
+  } catch (e) {
+    // Non-fatal — still proceed with logout even if the screen-leave save failed.
+  }
   try {
     await secureApiFetch('https://etccapps.com/apps/sam/api.php', {
       method: 'POST',
       body: JSON.stringify({ action: 'logout' })
     });
   } catch (e) {
-    // Ignore — redirecting regardless; the PHP session will also expire on its own.
+    // Ignore — the local gate is shown regardless; the PHP session will also expire on its own.
   }
   SessionManager.clearSession();
   sessionStorage.removeItem('sam_api_pw');
-  window.location.href = 'https://www.etccwebsite.com/content.aspx?page_id=0&club_id=313652';
+  sessionStorage.removeItem('sam_maint_ok'); // revoke the maintenance bypass too, else re-entry would skip the login gate entirely
+  passwordAuthenticated = false;
+  window._settingsAuthAt = 0; // also relock the Developer password gate
+
+  // Return to SAM's own login screen instead of navigating away to the
+  // club's external website — logging out should stay inside the app, not
+  // "exit" it to a different site entirely.
+  document.getElementById('maintenance-screen')?.classList.add('hidden');
+  const pwScreen = document.getElementById('password-screen');
+  const pwInput = document.getElementById('password-input');
+  if (pwInput) pwInput.value = '';
+  pwScreen?.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  document.body.classList.remove('nav-open'); // close the mobile nav drawer if it was open
+  document.getElementById('nav-developer-submenu')?.style.setProperty('display', 'none');
+  document.getElementById('nav-developer')?.setAttribute('aria-expanded', 'false');
+  pwInput?.focus();
 }
 
 (function installApiAutoReauth() {
@@ -9758,30 +9788,206 @@ function renderBackupLog() {
     wrap.innerHTML = '<div style="font-size:12px;color:var(--text-secondary);">No backups recorded yet.</div>';
     return;
   }
+  const TRIGGER_LABELS = { auto: 'Auto', restore: 'Restore', 'pre-restore': 'Pre-Restore' };
   const rows = history.slice().reverse().map(h => {
     const ok = h.status === 'success';
     const when = h.timestamp ? new Date(h.timestamp).toLocaleString() : '';
-    const trigger = h.reason === 'auto' ? 'Auto' : 'Manual';
+    const trigger = TRIGGER_LABELS[h.reason] || 'Manual';
     let details;
     if (ok) {
       const kb = Math.max(1, Math.round((h.sizeBytes || 0) / 1024));
-      details = `<a href="#" onclick="downloadBackupFile('${escHtml(h.fileName || '')}'); return false;">${escHtml(h.fileName || '')}</a> — ${kb} KB`;
+      if (h.reason === 'restore') {
+        // A restore row's own "backup file" is the source it restored FROM,
+        // which may have since been purged/deleted — no download/restore
+        // link for the row itself, just a record of what happened.
+        const counts = h.restoredCounts ? Object.entries(h.restoredCounts).map(([t, n]) => `${t}: ${n}`).join(', ') : '';
+        const scopeLabel = (h.scope && h.scope !== 'all') ? ` [auction: ${escHtml(h.scopeName || h.scope)}]` : ' [all auctions]';
+        details = `Restored from ${escHtml(h.restoredFrom || 'unknown')}${scopeLabel}${counts ? ' (' + escHtml(counts) + ')' : ''}`;
+      } else {
+        details = `<a href="#" onclick="downloadBackupFile('${escHtml(h.fileName || '')}'); return false;">${escHtml(h.fileName || '')}</a> — ${kb} KB`;
+      }
     } else {
-      details = escHtml(h.error || 'Unknown error');
+      details = h.reason === 'restore'
+        ? `Restore from ${escHtml(h.restoredFrom || 'unknown')} failed: ${escHtml(h.error || 'Unknown error')}`
+        : escHtml(h.error || 'Unknown error');
     }
+    // Restore is only offered for a row that still has a real file on disk
+    // (a successful backup/pre-restore snapshot, not a "restore" record row
+    // itself, which has no file of its own — see details above).
+    const canRestore = ok && h.reason !== 'restore' && h.fileName;
+    const actions = [
+      canRestore ? `<button class="btn" style="font-size:11px;padding:2px 8px;" title="Restore the database from this backup" onclick="restoreBackupEntry('${escHtml(h.timestamp || '')}', '${escHtml(h.fileName || '')}')">⟲ Restore</button>` : '',
+      `<button class="btn danger" style="font-size:11px;padding:2px 8px;" title="Delete this backup" onclick="deleteBackupEntry('${escHtml(h.timestamp || '')}')">🗑</button>`,
+    ].filter(Boolean).join(' ');
     return `<tr>
       <td style="white-space:nowrap;font-size:11px;">${escHtml(when)}</td>
       <td style="font-size:11px;">${trigger}</td>
       <td style="font-size:11px;">${ok ? '✅ Success' : '❌ Failed'}</td>
       <td style="font-size:11px;">${details}</td>
-      <td style="text-align:center;"><button class="btn danger" style="font-size:11px;padding:2px 8px;" title="Delete this backup" onclick="deleteBackupEntry('${escHtml(h.timestamp || '')}')">🗑</button></td>
+      <td style="text-align:center;white-space:nowrap;">${actions}</td>
     </tr>`;
   }).join('');
   wrap.innerHTML = `<table class="tablekit" style="width:100%;table-layout:fixed;" data-tk-sort="false">
-    <colgroup><col style="width:150px;"><col style="width:60px;"><col style="width:80px;"><col><col style="width:50px;"></colgroup>
+    <colgroup><col style="width:150px;"><col style="width:70px;"><col style="width:80px;"><col><col style="width:110px;"></colgroup>
     <thead><tr><th>Run</th><th>Trigger</th><th>Status</th><th>Details</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
+}
+
+// ── Restore-from-backup modal ───────────────────────────────────────────────
+// Restores the live database from one backup file — either the WHOLE database
+// (every auction) or just ONE auction's data, the admin's choice via a
+// dropdown. Genuinely destructive either way: the server takes its own fresh
+// whole-database safety backup first (a "Pre-Restore" row appears in the log
+// right before the "Restore" row), so a bad restore is itself always
+// recoverable. Requires re-entering the Developer password inline (verified
+// server-side, same as the Developer prompt itself) as a second confirmation
+// beyond just clicking a button — this is a rare, high-stakes admin action.
+let _restoreModal = null; // null = closed; else { timestamp, fileName, auctions, loading, scope, error, running }
+
+function restoreBackupEntry(timestamp, fileName) {
+  if (!timestamp) return;
+  _restoreModal = { timestamp, fileName, auctions: [], loading: true, scope: '', error: null, running: false };
+  renderRestoreModal();
+  secureApiFetch('https://etccapps.com/apps/sam/api.php', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'get_backup_auctions', timestamp })
+  }).then(r => r.json()).then(data => {
+    if (!_restoreModal || _restoreModal.timestamp !== timestamp) return; // closed/superseded while loading
+    _restoreModal.loading = false;
+    if (data && data.success) {
+      _restoreModal.auctions = data.auctions || [];
+    } else {
+      _restoreModal.error = 'Could not read this backup\'s contents: ' + ((data && data.error) || 'Unknown error');
+    }
+    renderRestoreModal();
+  }).catch(err => {
+    if (!_restoreModal || _restoreModal.timestamp !== timestamp) return;
+    _restoreModal.loading = false;
+    _restoreModal.error = 'Could not read this backup\'s contents: ' + err.message;
+    renderRestoreModal();
+  });
+}
+
+function closeRestoreModal() {
+  _restoreModal = null;
+  const host = document.getElementById('restore-backup-modal-host');
+  if (host) host.innerHTML = '';
+}
+
+function setRestoreScope(value) {
+  if (!_restoreModal) return;
+  _restoreModal.scope = value;
+  renderRestoreModal();
+}
+
+function renderRestoreModal() {
+  const host = document.getElementById('restore-backup-modal-host');
+  if (!host) return;
+  const m = _restoreModal;
+  if (!m) { host.innerHTML = ''; return; }
+
+  let bodyHtml;
+  if (m.loading) {
+    bodyHtml = `<p style="font-size:13px;color:var(--text-secondary);">Loading this backup's contents…</p>`;
+  } else if (m.error && !m.auctions.length) {
+    bodyHtml = `<p style="font-size:13px;color:var(--danger);">${escHtml(m.error)}</p>
+      <div style="display:flex;justify-content:flex-end;margin-top:16px;">
+        <button class="btn" onclick="closeRestoreModal()">Close</button>
+      </div>`;
+  } else {
+    const options = [`<option value="">Everything (every auction, plus settings/audit log)</option>`]
+      .concat(m.auctions.map(a => {
+        const label = (a.name === a.id ? a.id + ' (name unavailable — backup predates auction-name tracking)' : a.name)
+          + ' — ' + a.itemCount + ' item' + (a.itemCount === 1 ? '' : 's');
+        return `<option value="${escHtml(a.id)}"${m.scope === a.id ? ' selected' : ''}>${escHtml(label)}</option>`;
+      }));
+    const scopeIsAll = m.scope === '';
+    const scopedAuction = m.auctions.find(a => a.id === m.scope);
+    const scopeWarning = scopeIsAll
+      ? `This REPLACES the ENTIRE database — every auction's items, bidders, winners, and payments, plus settings and the audit log — with what was in that backup. Any auction created since this backup, or any data this backup doesn't have, is deleted, not just overwritten.`
+      : `This REPLACES ONLY the "${escHtml(scopedAuction ? scopedAuction.name : m.scope)}" auction's items, bidders, winners, and payments with what was in that backup — every other auction, and global settings, are left untouched.`;
+
+    bodyHtml = `
+      <div style="margin-bottom:14px;">
+        <label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:4px;">Restore</label>
+        <select id="restore-scope-select" onchange="setRestoreScope(this.value)" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--bg);color:var(--text);">
+          ${options.join('')}
+        </select>
+      </div>
+      <p style="font-size:12.5px;color:var(--danger);margin:0 0 12px;">${scopeWarning}</p>
+      <p style="font-size:12.5px;color:var(--text-secondary);margin:0 0 16px;">A safety backup of the CURRENT data is taken automatically right before restoring, so this can itself be undone by restoring that safety backup afterward. This cannot be undone directly.</p>
+      <label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:4px;">Enter the Developer password to confirm:</label>
+      <input type="password" id="restore-confirm-password" autocomplete="off" placeholder="Developer password" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--bg);color:var(--text);" onkeydown="if(event.key==='Enter'){event.preventDefault();performRestoreModal();}">
+      ${m.error ? `<p style="font-size:12.5px;color:var(--danger);margin-top:10px;">${escHtml(m.error)}</p>` : ''}
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+        <button class="btn" onclick="closeRestoreModal()" ${m.running ? 'disabled' : ''}>Cancel</button>
+        <button class="btn danger" onclick="performRestoreModal()" ${m.running ? 'disabled' : ''}>${m.running ? 'Restoring…' : 'Yes, Restore'}</button>
+      </div>`;
+  }
+
+  host.innerHTML = `
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;" onclick="if(event.target===this)closeRestoreModal()">
+      <div style="background:var(--bg);border-radius:12px;padding:24px;width:520px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25);">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px;">
+          <h3 style="margin:0;font-size:16px;">Restore from ${escHtml(m.fileName)}?</h3>
+          <button onclick="closeRestoreModal()" style="background:none;border:none;font-size:18px;line-height:1;cursor:pointer;color:var(--text-secondary);padding:0;">✕</button>
+        </div>
+        ${bodyHtml}
+      </div>
+    </div>`;
+
+  if (!m.loading && (!m.error || m.auctions.length)) {
+    document.getElementById('restore-confirm-password')?.focus();
+  }
+}
+
+function performRestoreModal() {
+  const m = _restoreModal;
+  if (!m || m.running) return;
+  const pwEl = document.getElementById('restore-confirm-password');
+  const password = pwEl ? pwEl.value : '';
+  if (!password) {
+    m.error = 'Enter the Developer password to confirm.';
+    renderRestoreModal();
+    return;
+  }
+  m.running = true;
+  m.error = null;
+  renderRestoreModal();
+
+  const statusEl = document.getElementById('backup-run-status');
+  if (statusEl) { statusEl.style.color = 'var(--text-secondary)'; statusEl.textContent = 'Restoring… this may take a moment.'; }
+
+  secureApiFetch('https://etccapps.com/apps/sam/api.php', {
+    method: 'POST',
+    body: JSON.stringify({ action: 'restore_backup', timestamp: m.timestamp, auction_id: m.scope, settings_password: password })
+  }).then(r => r.json()).then(result => {
+    if (result && result.success) {
+      _backupLogHistory = result.history || _backupLogHistory;
+      if (_backupLogOpen) renderBackupLog();
+      if (statusEl) { statusEl.style.color = 'var(--success)'; statusEl.textContent = 'Restore complete — reloading…'; }
+      closeRestoreModal();
+      alert('Restore complete. The page will now reload so every screen reflects the restored data.');
+      location.reload();
+    } else {
+      _backupLogHistory = (result && result.history) || _backupLogHistory;
+      if (_backupLogOpen) renderBackupLog();
+      if (statusEl) { statusEl.style.color = 'var(--danger)'; statusEl.textContent = 'Restore failed.'; }
+      if (_restoreModal) {
+        _restoreModal.running = false;
+        _restoreModal.error = (result && result.error) || 'Restore failed — please try again.';
+        renderRestoreModal();
+      }
+    }
+  }).catch(err => {
+    if (statusEl) { statusEl.style.color = 'var(--danger)'; statusEl.textContent = 'Restore failed.'; }
+    if (_restoreModal) {
+      _restoreModal.running = false;
+      _restoreModal.error = 'Restore failed: ' + err.message;
+      renderRestoreModal();
+    }
+  });
 }
 
 function deleteBackupEntry(timestamp) {
@@ -11237,7 +11443,7 @@ async function testSamApiUrl() {
 <div id="app-footer">
   <div>&copy; 2026 <span id="footer-club-name">${getClub().name}</span> &nbsp;&middot;&nbsp; Knoxville, TN</div>
   <div><a href="mailto:etccwebsite.webmanager@gmail.com">etccwebsite.webmanager@gmail.com</a></div>
-  <div>Version: <span id="app-version">v6.11</span> &nbsp;&middot;&nbsp; Deployed: <span id="app-deploy-date">Sep 14, 2026 10:56 AM</span></div>
+  <div>Version: <span id="app-version">v6.12</span> &nbsp;&middot;&nbsp; Deployed: <span id="app-deploy-date">Sep 14, 2026 7:04 PM</span></div>
   <div>Website by Business Web Express &nbsp;&middot;&nbsp; <a href="mailto:info@businesswebexpress.com">info@businesswebexpress.com</a></div>
 </div>
 

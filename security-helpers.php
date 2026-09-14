@@ -654,7 +654,11 @@ function createDatabaseBackup($pdo, $backupDir, $dbName) {
 
         // SECURITY: Avoid shell_exec() (command injection risk). Use PHP-based backup instead.
         // This is safer and more portable across hosting environments.
-        $tables = ['items', 'bidders', 'winners', 'payments', 'settings', 'audit_log', 'sam_store'];
+        // SAM_BACKUP_TABLES (defined below, after this function) is the single
+        // source of truth shared with restoreDatabaseBackup() — PHP's define()
+        // runs at file-include time, so it's already set by the time either
+        // function actually gets called from an action handler.
+        $tables = SAM_BACKUP_TABLES;
         $backup = [];
         $backupMeta = [
             'backup_time' => date('Y-m-d H:i:s'),
@@ -749,6 +753,212 @@ function createDatabaseBackup($pdo, $backupDir, $dbName) {
         }
 
         return ['success' => false, 'error' => 'Backup file not created'];
+    } catch (Exception $e) {
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+
+// Tables createDatabaseBackup() dumps/restores. Kept as one shared constant so
+// the two functions can never drift out of sync with each other.
+// 'auctions' was added this session — a real gap in the original list: without
+// it, a restore could put items/bidders/etc. back with auction_id values that
+// no longer resolve to any auction name/status, since the auctions table
+// itself (id/name/status) was never being backed up at all.
+define('SAM_BACKUP_TABLES', ['auctions', 'items', 'bidders', 'winners', 'payments', 'settings', 'audit_log', 'sam_store']);
+
+// Which column identifies "which auction" a row belongs to, for the tables a
+// per-auction (scoped) restore is allowed to touch. 'auctions' itself is
+// keyed by its own `id`, not an `auction_id` column. Tables NOT listed here
+// (settings, audit_log, sam_store) are global/shared across every auction and
+// are never touched by a scoped restore — only a whole-database restore
+// (auctionId === null) restores those.
+define('SAM_AUCTION_SCOPED_TABLES', [
+    'auctions' => 'id',
+    'items'    => 'auction_id',
+    'bidders'  => 'auction_id',
+    'winners'  => 'auction_id',
+    'payments' => 'auction_id',
+]);
+
+// Reads one backup file (.zip, or legacy .sql/.sql.gz) back into the same
+// $backup['table'] => [row, row, ...] shape createDatabaseBackup() wrote.
+function sam_read_backup_file($backupDir, $fileName) {
+    $path = $backupDir . '/' . $fileName;
+    if (!is_file($path)) throw new Exception("Backup file not found: $fileName");
+
+    if (preg_match('/\.zip$/i', $fileName)) {
+        if (!class_exists('ZipArchive')) throw new Exception('This backup is a .zip file but the server\'s zip extension is unavailable.');
+        $zip = new ZipArchive();
+        if ($zip->open($path) !== true) throw new Exception("Could not open zip archive: $fileName");
+        // The zip always holds exactly one entry — the .sql dump added by
+        // createDatabaseBackup() — but find it by extension rather than
+        // assuming index 0, in case a backup is ever hand-edited.
+        $sqlEntry = null;
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $entryName = $zip->getNameIndex($i);
+            if (preg_match('/\.sql$/i', $entryName)) { $sqlEntry = $entryName; break; }
+        }
+        if ($sqlEntry === null) { $zip->close(); throw new Exception("No .sql file found inside $fileName"); }
+        $content = $zip->getFromName($sqlEntry);
+        $zip->close();
+        if ($content === false) throw new Exception("Could not read $sqlEntry from $fileName");
+    } elseif (preg_match('/\.sql\.gz$/i', $fileName)) {
+        $raw = file_get_contents($path);
+        if ($raw === false) throw new Exception("Could not read $fileName");
+        $content = @gzuncompress($raw);
+        if ($content === false) throw new Exception("Could not decompress $fileName");
+    } else {
+        $content = file_get_contents($path);
+        if ($content === false) throw new Exception("Could not read $fileName");
+    }
+
+    // Format is a few "-- comment" header lines, a blank line, then the JSON
+    // dump (see createDatabaseBackup()) — locate the JSON by its opening brace
+    // rather than counting header lines, so this stays robust to header edits.
+    $jsonStart = strpos($content, '{');
+    if ($jsonStart === false) throw new Exception("$fileName does not look like a valid backup (no JSON payload found)");
+    $backup = json_decode(substr($content, $jsonStart), true);
+    if (!is_array($backup)) throw new Exception("$fileName's backup data could not be parsed");
+    return $backup;
+}
+
+// Lists the distinct auctions found inside one backup file, for the "restore
+// just one auction" UI to offer real choices instead of a blank text field.
+// Prefers the backup's own 'auctions' table (id/name/status, added this
+// session) for real names; falls back to bare auction_id strings (pulled from
+// whichever of items/bidders/winners/payments has rows) for an OLDER backup
+// made before 'auctions' was included in SAM_BACKUP_TABLES.
+function sam_backup_auction_ids($backup) {
+    $known = [];
+    if (!empty($backup['auctions']) && is_array($backup['auctions'])) {
+        foreach ($backup['auctions'] as $a) {
+            if (is_array($a) && isset($a['id'])) {
+                $known[(string)$a['id']] = ['id' => (string)$a['id'], 'name' => $a['name'] ?? (string)$a['id'], 'status' => $a['status'] ?? ''];
+            }
+        }
+    }
+    // Item counts (and any auction_id present in items/etc. but missing from
+    // an older backup's auctions table, if it predates that table existing).
+    $itemCounts = [];
+    foreach (['items', 'bidders', 'winners', 'payments'] as $table) {
+        if (empty($backup[$table]) || !is_array($backup[$table])) continue;
+        foreach ($backup[$table] as $row) {
+            $id = isset($row['auction_id']) ? (string)$row['auction_id'] : '';
+            if ($id === '') continue;
+            if ($table === 'items') $itemCounts[$id] = ($itemCounts[$id] ?? 0) + 1;
+            if (!isset($known[$id])) $known[$id] = ['id' => $id, 'name' => $id, 'status' => ''];
+        }
+    }
+    $result = [];
+    foreach ($known as $id => $a) {
+        $a['itemCount'] = $itemCounts[$id] ?? 0;
+        $result[] = $a;
+    }
+    usort($result, fn($a, $b) => strcmp($a['name'], $b['name']));
+    return $result;
+}
+
+// Restores the live database from one backup file — either the WHOLE
+// database (all auctions, plus the global settings/audit_log/sam_store rows),
+// or just ONE auction's data when $auctionId is given (only the tables in
+// SAM_AUCTION_SCOPED_TABLES are touched, filtered to that auction — every
+// other auction's rows, and the global tables, are left completely alone).
+// Destructive either way, so this ALWAYS takes a fresh WHOLE-database safety
+// backup first regardless of scope (reason handled by the caller's history
+// entry), making any restore itself reversible by restoring that pre-restore
+// snapshot. Runs inside a transaction: a failure partway through rolls back
+// everything restored so far rather than leaving the database half-old/half-new.
+function restoreDatabaseBackup($pdo, $backupDir, $fileName, $dbName, $auctionId = null) {
+    try {
+        $backup = sam_read_backup_file($backupDir, $fileName);
+        $auctionId = ($auctionId !== null && $auctionId !== '') ? (string)$auctionId : null;
+
+        // Safety net — snapshot current state before overwriting anything,
+        // even for a scoped restore (cheap, and keeps the recovery story
+        // identical regardless of scope: restore that file to undo).
+        $preRestore = createDatabaseBackup($pdo, $backupDir, $dbName);
+        if (empty($preRestore['success'])) {
+            throw new Exception('Could not take a safety backup before restoring — aborted without changing anything. (' . ($preRestore['error'] ?? 'unknown error') . ')');
+        }
+
+        $tables = $auctionId !== null ? array_keys(SAM_AUCTION_SCOPED_TABLES) : SAM_BACKUP_TABLES;
+
+        $pdo->beginTransaction();
+        // Tables outside SAM_BACKUP_TABLES (e.g. 'emails') aren't backed up or
+        // touched here, but some of them (emails.auction_id) hold a foreign
+        // key INTO 'auctions' — deleting an auctions row to reinsert it (same
+        // id, fresh data) trips that FK constraint even though the same id
+        // comes right back a moment later. FOREIGN_KEY_CHECKS is a per-
+        // connection setting, NOT part of the transaction (a ROLLBACK won't
+        // undo it), so it's explicitly restored to 1 in both the success and
+        // failure paths below rather than relying on the transaction boundary.
+        $pdo->exec('SET FOREIGN_KEY_CHECKS=0');
+        $counts = [];
+        try {
+            foreach ($tables as $table) {
+                if (!array_key_exists($table, $backup) || !is_array($backup[$table])) continue;
+                $rows = $backup[$table];
+
+                if ($auctionId !== null) {
+                    // Scoped: only this auction's rows, identified by whatever
+                    // column means "which auction" for this table.
+                    $idCol = SAM_AUCTION_SCOPED_TABLES[$table];
+                    $rows = array_values(array_filter($rows, fn($r) => isset($r[$idCol]) && (string)$r[$idCol] === $auctionId));
+                    $pdo->prepare("DELETE FROM `$table` WHERE `$idCol` = ?")->execute([$auctionId]);
+                } else {
+                    $pdo->exec("DELETE FROM `$table`");
+                }
+
+                $inserted = 0;
+                if (!empty($rows)) {
+                    // Columns come from each row's own keys (captured verbatim
+                    // by createDatabaseBackup()'s `SELECT *`), not a hardcoded
+                    // schema — stays correct even if a table gains/loses a
+                    // column between the backup being made and being restored.
+                    $cols = array_keys($rows[0]);
+                    $colList = implode(', ', array_map(fn($c) => "`$c`", $cols));
+                    $placeholders = implode(', ', array_fill(0, count($cols), '?'));
+                    $stmt = $pdo->prepare("INSERT INTO `$table` ($colList) VALUES ($placeholders)");
+                    foreach ($rows as $row) {
+                        $stmt->execute(array_map(fn($c) => $row[$c] ?? null, $cols));
+                        $inserted++;
+                    }
+                }
+                $counts[$table] = $inserted;
+            }
+            $pdo->exec('SET FOREIGN_KEY_CHECKS=1');
+            $pdo->commit();
+        } catch (Exception $e) {
+            try { $pdo->exec('SET FOREIGN_KEY_CHECKS=1'); } catch (Exception $ignore) {}
+            $pdo->rollBack();
+            throw $e;
+        }
+
+        // Resolve a human-readable name for the log, same source
+        // sam_backup_auction_ids() prefers — the backup's own 'auctions' rows
+        // (id/name) — falling back to the raw id for an older backup that
+        // predates auction-name tracking.
+        $scopeName = 'All Auctions';
+        if ($auctionId !== null) {
+            $scopeName = $auctionId;
+            if (!empty($backup['auctions']) && is_array($backup['auctions'])) {
+                foreach ($backup['auctions'] as $a) {
+                    if (is_array($a) && isset($a['id']) && (string)$a['id'] === $auctionId && !empty($a['name'])) {
+                        $scopeName = $a['name'];
+                        break;
+                    }
+                }
+            }
+        }
+
+        return [
+            'success' => true,
+            'counts' => $counts,
+            'scope' => $auctionId !== null ? $auctionId : 'all',
+            'scopeName' => $scopeName,
+            'preRestoreBackup' => $preRestore['file'],
+            'timestamp' => date('Y-m-d H:i:s'),
+        ];
     } catch (Exception $e) {
         return ['success' => false, 'error' => $e->getMessage()];
     }

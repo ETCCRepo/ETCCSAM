@@ -237,6 +237,8 @@ $allowedActions = [
     'get_backup_history',
     'delete_backup',
     'download_backup',
+    'get_backup_auctions',
+    'restore_backup',
     'get_backup_schedule',
     'save_backup_schedule',
     'send_email',
@@ -298,7 +300,7 @@ if (!in_array($action, $publicActions, true)) {
     // actions confirmed to go through that helper, rather than every
     // authenticated request, so a fetch() call site missed in this audit can't
     // silently break the live app.
-    $csrfProtectedActions = ['save_settings', 'set_password', 'delete_auction', 'clear_all', 'clear_data', 'clear_auctions', 'delete_backup', 'save_backup_schedule'];
+    $csrfProtectedActions = ['save_settings', 'set_password', 'delete_auction', 'clear_all', 'clear_data', 'clear_auctions', 'delete_backup', 'restore_backup', 'save_backup_schedule'];
     if (in_array($action, $csrfProtectedActions, true)) {
         $sentToken = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
         if (empty($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $sentToken)) {
@@ -514,6 +516,22 @@ function sam_guard_settings_passwords($incoming, PDO $pdo) {
     return $incoming;
 }
 
+// Reads the current settingsPassword (Developer password), falling back to
+// the same default DEFAULT_SETTINGS uses client-side when nothing is stored
+// yet (fresh install, before the Developer password has ever been set).
+// Shared by 'verify_settings_password' and 'restore_backup' (which re-verifies
+// this same password inline before doing anything destructive) so the two
+// checks can't drift.
+function sam_get_settings_password(PDO $pdo) {
+    $stored = '';
+    $val = $pdo->query("SELECT `value` FROM sam_store WHERE `key` = 'sam_settings' LIMIT 1")->fetchColumn();
+    if ($val) {
+        $settings = json_decode($val, true);
+        if (is_array($settings) && !empty($settings['settingsPassword'])) $stored = (string)$settings['settingsPassword'];
+    }
+    return $stored !== '' ? $stored : 'Gladiator#1';
+}
+
 // Writes ONE password field into sam_settings, leaving every other key as
 // stored. Shared by 'set_password' and 'reset_password' — the only two paths
 // allowed to change a password that's already set (see guard above).
@@ -610,25 +628,14 @@ if ($action === 'login') {
     // wrapper treats any 401 from api.php as an expired session and silently
     // re-logs-in and retries, which would double every failed attempt.
     $entered = (string)($input['password'] ?? '');
-    $stored = '';
     try {
-        $val = $pdo->query("SELECT `value` FROM sam_store WHERE `key` = 'sam_settings' LIMIT 1")->fetchColumn();
-        if ($val) {
-            $settings = json_decode($val, true);
-            if (is_array($settings) && !empty($settings['settingsPassword'])) $stored = (string)$settings['settingsPassword'];
-        }
+        $stored = sam_get_settings_password($pdo);
     } catch (Exception $e) {
         logQuery($action, 'VERIFY_SETTINGS_PASSWORD', 'ERROR', $e->getMessage());
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => 'Could not read settings from the server.']);
         exit;
     }
-    // Nothing stored server-side yet: honor the same default the client's
-    // DEFAULT_SETTINGS uses, so a fresh install isn't locked out of Settings
-    // (where the password gets set). Once any real value is saved, only that
-    // value is accepted — sam_guard_settings_passwords() stops it ever being
-    // reverted to this default.
-    if ($stored === '') $stored = 'Gladiator#1';
 
     if ($entered !== '' && hash_equals($stored, $entered)) {
         logQuery($action, 'VERIFY_SETTINGS_PASSWORD', 'SUCCESS', 'Developer gate unlocked');
@@ -2268,6 +2275,119 @@ if ($action === 'login') {
     header('Content-Length: ' . filesize($path));
     readfile($path);
     exit;
+
+} elseif ($action === 'get_backup_auctions') {
+    // Read-only: lists the distinct auctions found inside one backup file, so
+    // the Restore UI can offer "restore just this one auction" as a real
+    // choice (with real names/item counts) instead of a blind text field.
+    $timestamp = (string)($input['timestamp'] ?? '');
+    try {
+        $history = samReadBackupHistory($pdo);
+        $target = null;
+        foreach ($history as $e) {
+            if (is_array($e) && ($e['timestamp'] ?? null) === $timestamp) { $target = $e; break; }
+        }
+        if ($target === null || ($target['status'] ?? '') !== 'success') {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'error' => 'Backup log entry not found or was not a successful backup.']);
+        } else {
+            $backupDir = __DIR__ . '/backups';
+            $fileName = (string)($target['fileName'] ?? '');
+            if ($fileName === '' || !preg_match('/^backup_[0-9\-_]+\.(zip|sql(\.gz)?)$/', $fileName) || !is_file($backupDir . '/' . $fileName)) {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'error' => 'Backup file not found on disk — it may have aged past the retention limit (newest ' . SAM_BACKUP_KEEP . ' kept).']);
+            } else {
+                $backup = sam_read_backup_file($backupDir, $fileName);
+                echo json_encode(['success' => true, 'auctions' => sam_backup_auction_ids($backup)]);
+            }
+        }
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+
+} elseif ($action === 'restore_backup') {
+    // Restores the live database from a specific backup file, identified by
+    // its history entry's timestamp (same identity convention delete_backup
+    // uses). Either the WHOLE database (all auctions + global settings/audit_
+    // log/sam_store), or — when auction_id is given — just that one auction's
+    // items/bidders/winners/payments/auctions row, leaving every other
+    // auction and the global tables completely untouched. Genuinely
+    // destructive either way, so restoreDatabaseBackup() itself ALWAYS takes
+    // a fresh whole-database safety backup (reason:'pre-restore') before
+    // touching anything, meaning a bad restore is itself always recoverable
+    // by restoring that pre-restore backup. Also requires the Developer
+    // (Settings) password to be re-entered inline in the confirm modal and
+    // verified server-side here — the same check verify_settings_password
+    // does — as a second, explicit confirmation beyond just clicking a
+    // button, given how destructive this action is.
+    $userId = getAuthUserId();
+    $timestamp = (string)($input['timestamp'] ?? '');
+    $auctionId = (string)($input['auction_id'] ?? '');
+    $confirmPassword = (string)($input['settings_password'] ?? '');
+    try {
+        $storedSettingsPassword = sam_get_settings_password($pdo);
+        if ($confirmPassword === '' || !hash_equals($storedSettingsPassword, $confirmPassword)) {
+            logSecurityEvent('SETTINGS_AUTH_FAILURE', $action, 'Invalid Developer password on restore_backup confirm', 'WARN');
+            http_response_code(403);
+            echo json_encode(['success' => false, 'error' => 'Incorrect Developer password.']);
+            exit;
+        }
+        $history = samReadBackupHistory($pdo);
+        $target = null;
+        foreach ($history as $e) {
+            if (is_array($e) && ($e['timestamp'] ?? null) === $timestamp) { $target = $e; break; }
+        }
+        if ($target === null || ($target['status'] ?? '') !== 'success') {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'error' => 'Backup log entry not found or was not a successful backup.']);
+        } else {
+            $backupDir = __DIR__ . '/backups';
+            $fileName = (string)($target['fileName'] ?? '');
+            $path = $backupDir . '/' . $fileName;
+            if ($fileName === '' || !preg_match('/^backup_[0-9\-_]+\.(zip|sql(\.gz)?)$/', $fileName) || !is_file($path)) {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'error' => 'Backup file not found on disk — it may have aged past the retention limit (newest ' . SAM_BACKUP_KEEP . ' kept).']);
+            } else {
+                $result = restoreDatabaseBackup($pdo, $backupDir, $fileName, $env['DB_NAME'], $auctionId !== '' ? $auctionId : null);
+
+                // The pre-restore safety snapshot gets its OWN history entry
+                // (reason:'pre-restore'), same as a normal manual/auto backup
+                // would — otherwise the file exists on disk but is invisible
+                // and unrestorable from the UI, defeating the point of taking
+                // it. Logged even if the restore itself then fails, since the
+                // safety backup step runs (and succeeds) before that.
+                if (!empty($result['preRestoreBackup'])) {
+                    samAppendBackupHistory($pdo, [
+                        'timestamp' => gmdate('c', filemtime($result['preRestoreBackup']) ?: time()),
+                        'status' => 'success',
+                        'reason' => 'pre-restore',
+                        'fileName' => basename($result['preRestoreBackup']),
+                        'sizeBytes' => filesize($result['preRestoreBackup']),
+                    ]);
+                }
+
+                $entry = [
+                    'timestamp' => gmdate('c'),
+                    'status' => $result['success'] ? 'success' : 'failed',
+                    'reason' => 'restore',
+                    'restoredFrom' => $fileName,
+                    'scope' => $auctionId !== '' ? $auctionId : 'all',
+                ];
+                if ($result['success']) {
+                    $entry['restoredCounts'] = $result['counts'];
+                    if (!empty($result['scopeName'])) $entry['scopeName'] = $result['scopeName'];
+                } else {
+                    $entry['error'] = $result['error'];
+                }
+                samAppendBackupHistory($pdo, $entry);
+                logAudit($pdo, $userId, 'restore_backup', 'system', 'backup', null, $result, $result['success'] ? 'success' : 'failure', "Restored from: $fileName (scope: " . ($auctionId !== '' ? $auctionId : 'all auctions') . ")");
+                echo json_encode(array_merge($result, ['entry' => $entry, 'history' => samReadBackupHistory($pdo)]));
+            }
+        }
+    } catch (Exception $e) {
+        logAudit($pdo, $userId, 'restore_backup_error', 'system', 'backup', null, null, 'failure', $e->getMessage());
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
 
 } elseif ($action === 'send_email') {
     // Replaces the old client-side Gmail OAuth send (sendEmailsViaGmail() in
