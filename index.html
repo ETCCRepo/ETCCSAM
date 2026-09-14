@@ -21,8 +21,8 @@
        Screen") — it only looks at apple-touch-icon. Kept in sync with the same
        Club Branding favicon by updateFavicon() below. -->
   <link rel="apple-touch-icon" id="apple-touch-icon-link" href="Images/ETCClogoWhiteBackground.png" />
-  <link rel="stylesheet" href="css/table.css?v=1788189158" />
-  <link rel="stylesheet" href="css/toolbar.css?v=1788189158" />
+  <link rel="stylesheet" href="css/table.css?v=1789378469" />
+  <link rel="stylesheet" href="css/toolbar.css?v=1789378469" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -407,21 +407,6 @@
     #view-all-toolbar-wrap .tk-toolbar-title {
       display: block;
       min-width: 200px;
-    }
-    #member-db-modal .tk-wrap {
-      overflow: visible;
-    }
-    #member-db-modal-table thead th,
-    #member-db-modal-table tbody td {
-      padding: 1px 8px;
-      font-size: 11px;
-      line-height: 1.3;
-    }
-    #member-db-modal-table thead th {
-      position: sticky;
-      top: 0;
-      z-index: 2;
-      background: #dbeafe;
     }
     #bidders-table thead th,
     #bidders-table tbody td {
@@ -1219,42 +1204,6 @@
       <!-- Metric summary -->
       <div class="metric-row">
         <div class="metric-card"><div class="m-label">Registered Bidders</div><div class="m-value" id="m-bidder-count">0</div></div>
-      </div>
-
-      <!-- Member Database Modal -->
-      <div id="member-db-modal" style="display:none;position:fixed;top:70px;left:0;right:0;bottom:0;background:var(--bg-section);z-index:1000;flex-direction:column;">
-        <div class="page-header" style="flex-shrink:0;background:var(--bg);">
-          <h2>Member Database</h2><p>Club Express Additional Member Data</p>
-          <button class="btn" onclick="closeMemberDBModal()" style="margin-left:auto;font-size:13px;padding:6px 16px;">✕ Close</button>
-        </div>
-        <!-- Card -->
-        <div style="padding:20px 20px 0 20px;flex:1;overflow:hidden;display:flex;flex-direction:column;">
-          <div style="border:1px solid var(--border);border-radius:10px;flex:1;overflow:hidden;display:flex;flex-direction:column;">
-            <div class="card-header" style="display:flex;align-items:center;flex-shrink:0;padding:8px 16px;">
-              <input id="member-search" type="text" placeholder="Search last name…" oninput="filterMemberTable(this.value)" style="font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);width:200px;">
-            </div>
-            <div style="overflow-y:auto;flex:1;">
-              <table class="tablekit" id="member-db-modal-table" style="table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0;">
-                <colgroup>
-                  <col style="width:70px;"><col style="width:110px;"><col style="width:180px;">
-                  <col style="width:180px;"><col style="width:260px;"><col style="width:160px;">
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th>Select</th><th>Member #</th><th>Last Name</th><th>First Name</th><th>Email</th><th>Phone</th>
-                  </tr>
-                </thead>
-                <tbody id="member-db-modal-tbody"></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-        <!-- Footer -->
-        <div style="padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-top:1px solid var(--border);background:var(--bg);">
-          <button class="btn primary workflow-edit-btn" onclick="addCheckedToWalkins()">Add to Bidders</button>
-          <button class="btn workflow-edit-btn" onclick="selectAllMembers(false)">Clear</button>
-          <span id="member-db-walkin-status" style="font-size:12px;color:var(--text-secondary);"></span>
-        </div>
       </div>
 
       <!-- Edit Bidder Modal -->
@@ -2066,6 +2015,16 @@
         </div>
         <div id="import-members-status" style="margin-top:10px;font-size:12px;color:var(--text-secondary);"></div>
       </div>
+      <div class="card" style="margin-bottom:16px;padding:0;">
+        <div class="card-header" style="padding:12px 16px;">Import History</div>
+        <div style="max-height:220px;overflow:auto;">
+          <table class="tablekit" id="import-history-table" style="width:100%;table-layout:fixed;">
+            <colgroup><col style="width:220px;"><col></colgroup>
+            <thead><tr><th>Date/Time</th><th>Members Imported</th></tr></thead>
+            <tbody id="import-history-tbody"></tbody>
+          </table>
+        </div>
+      </div>
       <div class="card" style="padding:0;">
         <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;">
           <span id="import-members-count">0 members</span>
@@ -2449,8 +2408,8 @@
 </div>
 
 <!-- Scripts -->
-<script src="js/table.js?v=1788189158"></script>
-<script src="js/toolbar.js?v=1788189158"></script>
+<script src="js/table.js?v=1789378469"></script>
+<script src="js/toolbar.js?v=1789378469"></script>
 <script>
 (function() {
   const _origInit = PageToolbar.init.bind(PageToolbar);
@@ -2897,6 +2856,19 @@ const DB = {
       method: 'POST',
       body: JSON.stringify({ action: 'save_members', data: v })
     }).catch(e => console.warn('Failed to save members to database:', e));
+  },
+  // Import history — a separate, additive log of each CSV import (Developer >
+  // Import Members). Deliberately NOT touched by saveMembers()/Delete All, so
+  // the history survives a member-list clear and each import (which replaces
+  // the whole list) still leaves an audit trail of when/how many were loaded.
+  // Uses the plain sam_-prefixed localStorage.setItem() convention, which the
+  // global wrapper (SERVER SYNC block above) auto-syncs via action:'set' —
+  // no dedicated API action needed, unlike saveMembers()'s SQL table mirror.
+  getMemberImportHistory() { return JSON.parse(localStorage.getItem('sam_members_import_history') || '[]'); },
+  addMemberImportHistoryEntry(count) {
+    const history = DB.getMemberImportHistory();
+    history.unshift({ timestamp: new Date().toISOString(), count });
+    localStorage.setItem('sam_members_import_history', JSON.stringify(history));
   },
   getRegDB()      { return JSON.parse(localStorage.getItem('sam_regdb')   || '[]'); },
   saveRegDB(v)    {
@@ -4861,149 +4833,6 @@ function closeBidderEditModal() {
   document.getElementById('bidder-edit-modal').style.display = 'none';
 }
 
-function closeMemberDBModal() {
-  // The modal is an overlay on the Register Bidders screen — hiding it reveals
-  // that screen with its toolbar intact. (Previously this modal stole the shared
-  // #page-toolbar, which left the Register Bidders toolbar missing on return.)
-  const modal = document.getElementById('member-db-modal');
-  if (modal) modal.style.display = 'none';
-}
-
-function showMemberDBModal() {
-  try {
-    const members = DB.getMembers() || [];
-    const tbody = document.getElementById('member-db-modal-tbody');
-    if (!tbody) {
-      console.error('member-db-modal-tbody not found');
-      alert('Error: Modal table not found. Please refresh the page.');
-      return;
-    }
-    tbody.innerHTML = '';
-    const tdStyle = 'font-size:12px;padding:3px 8px;';
-    if (!members.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text-secondary);">No members loaded. Import a CSV in Settings.</td></tr>';
-    } else {
-      members.forEach((m, i) => {
-        if (!m) return;
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td style="text-align:center;padding:3px 8px;"><input type="checkbox" data-idx="${i}" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;"></td>
-          <td style="${tdStyle}">${escHtml(m.member_number || '')}</td>
-          <td style="${tdStyle}">${escHtml(m.last_name     || '')}</td>
-          <td style="${tdStyle}">${escHtml(m.first_name    || '')}</td>
-          <td style="${tdStyle}">${escHtml(m.primary_email || '')}</td>
-          <td style="${tdStyle}">${escHtml(m.cell_phone    || '')}</td>
-        `;
-        tbody.appendChild(tr);
-      });
-    }
-    const searchEl = document.getElementById('member-search');
-    if (searchEl) searchEl.value = '';
-
-    const modal = document.getElementById('member-db-modal');
-    if (modal) {
-      modal.style.display = 'flex';
-    } else {
-      console.error('member-db-modal not found');
-      alert('Error: Modal not found. Please refresh the page.');
-      return;
-    }
-
-    // Force sticky header: override tk-wrap overflow and set inline sticky on each th
-    const tkWrap = document.querySelector('#member-db-modal .tk-wrap');
-    if (tkWrap) tkWrap.style.cssText += ';overflow:visible!important';
-    document.querySelectorAll('#member-db-modal-table thead th').forEach(th => {
-      th.style.position = 'sticky';
-      th.style.top = '0';
-      th.style.zIndex = '10';
-      th.style.background = '#dbeafe';
-    });
-
-    // Replace the "Select" header with a check-all / uncheck-all checkbox
-    // (defaults unchecked so the whole roster isn't pre-selected).
-    const selectHeader = document.querySelector('#member-db-modal-table thead tr th');
-    if (selectHeader) {
-      selectHeader.innerHTML = '<input type="checkbox" id="member-db-select-all" title="Check / uncheck all" onchange="selectAllMembers(this.checked)" style="width:16px;height:16px;cursor:pointer;margin:0;vertical-align:middle;">';
-      selectHeader.style.textAlign = 'center';
-    }
-  } catch(err) {
-    console.error('showMemberDBModal error:', err);
-    alert('Error opening member database: ' + (err.message || err));
-  }
-}
-
-function selectAllMembers(checked) {
-  document.querySelectorAll('#member-db-modal-tbody tr').forEach(tr => {
-    if (tr.style.display !== 'none') {
-      const cb = tr.querySelector('input[type="checkbox"]');
-      if (cb) cb.checked = checked;
-    }
-  });
-}
-
-function filterMemberTable(query) {
-  const q = query.trim().toLowerCase();
-  document.querySelectorAll('#member-db-modal-tbody tr').forEach(tr => {
-    const lastName = (tr.cells[2] ? tr.cells[2].textContent : '').toLowerCase();
-    tr.style.display = (!q || lastName.startsWith(q)) ? '' : 'none';
-  });
-}
-
-function addCheckedToWalkins() {
-  const status = document.getElementById('member-db-walkin-status');
-  function setStatus(msg, color) {
-    status.textContent = msg;
-    status.style.color = color || 'var(--text-secondary)';
-  }
-  try {
-    const allCheckboxes = document.querySelectorAll('#member-db-modal-table tbody input[type="checkbox"]');
-    const checked = Array.from(allCheckboxes).filter(cb => cb.checked);
-    if (!checked.length) {
-      setStatus('No members selected. Check a row first.');
-      return;
-    }
-    const members  = DB.getMembers();
-    // Build the full list locally and save ONCE (one add-at-a-time would fire a
-    // server sync per bidder → 429 rate-limiting on large selections).
-    const list = Bidders.getAll();
-    const existingKeys = new Set(list.map(b => `${(b.last_name||'').trim().toLowerCase()}|${(b.first_name||'').trim().toLowerCase()}`));
-    let maxNum = list.reduce((mx, b) => Math.max(mx, parseInt(b.bidder_number, 10) || 0), 0);
-    let added = 0, dupes = 0;
-    checked.forEach(cb => {
-      const idx = parseInt(cb.getAttribute('data-idx'), 10);
-      const m = members[idx];
-      if (!m) return;
-      const key = `${(m.last_name||'').trim().toLowerCase()}|${(m.first_name||'').trim().toLowerCase()}`;
-      if (existingKeys.has(key)) { dupes++; return; }
-      let bidderNum = parseInt(m.member_number, 10);
-      if (!bidderNum) { maxNum += 1; bidderNum = maxNum; } else { maxNum = Math.max(maxNum, bidderNum); }
-      list.push({
-        bidder_number: bidderNum,
-        last_name:     m.last_name     || '',
-        first_name:    m.first_name    || '',
-        email:         m.primary_email || '',
-        phone:         m.cell_phone    || '',
-        bidder_type:   'member'
-      });
-      existingKeys.add(key);
-      cb.checked = false;
-      added++;
-    });
-    Bidders.save(list);
-    refreshBiddersTable();
-    // Close the Member Database modal (revealing Register Bidders with its
-    // toolbar intact) and scroll the bidders table to the last (newly added) row.
-    closeMemberDBModal();
-    setTimeout(() => {
-      const tbody = document.getElementById('bidders-tbody');
-      const lastRow = tbody && tbody.rows.length ? tbody.rows[tbody.rows.length - 1] : null;
-      if (lastRow) lastRow.scrollIntoView({ block: 'end', behavior: 'smooth' });
-    }, 100);
-  } catch(e) {
-    setStatus('Error: ' + e.message, 'var(--danger)');
-  }
-}
-
 function saveBidderEdit() {
   const modal = document.getElementById('bidder-edit-modal');
   const originalNum = parseInt(modal.dataset.originalBidderNum, 10);
@@ -6885,7 +6714,7 @@ async function navigate(screenId) {
   if (screenId === 'settings')       loadSettingsForm();
   if (screenId === 'config')         loadSettingsForm();
   if (screenId === 'api')            loadApiTestPage();
-  if (screenId === 'import-members') refreshImportMembersTable();
+  if (screenId === 'import-members') { refreshImportMembersTable(); refreshImportHistoryTable(); }
   if (screenId === 'bidding-sheets') {
     PageToolbar.init({ title: '', tableSelector: '#bs-items-table' });
     const tb   = document.getElementById('page-toolbar');
@@ -9617,12 +9446,30 @@ function importMembersCsv() {
     }
 
     DB.saveMembers(members);
+    DB.addMemberImportHistoryEntry(members.length);
     statusEl.textContent = `${members.length} member(s) imported.`;
     fileInput.value = '';
     refreshImportMembersTable();
+    refreshImportHistoryTable();
     debugLog(`✓ Imported ${members.length} members via Developer > Import Members`);
   };
   reader.readAsText(file);
+}
+
+function refreshImportHistoryTable() {
+  const history = DB.getMemberImportHistory();
+  const tbody = document.getElementById('import-history-tbody');
+  if (!tbody) return;
+  if (!history.length) {
+    tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;padding:20px;color:var(--text-secondary);">No imports yet.</td></tr>';
+  } else {
+    tbody.innerHTML = history.map(h => `
+      <tr>
+        <td>${escHtml(new Date(h.timestamp).toLocaleString())}</td>
+        <td>${escHtml(String(h.count))}</td>
+      </tr>`).join('');
+  }
+  TableKit.init(document.getElementById('import-history-table'));
 }
 
 function refreshImportMembersTable() {
@@ -9996,7 +9843,6 @@ document.getElementById('btn-clear-members').addEventListener('click', () => {
   DB.saveMembers([]);
   const s = document.getElementById('member-import-status');
   if (s) s.textContent = 'Member table cleared.';
-  if (typeof showMemberDBModal === 'function' && document.getElementById('member-db-modal')?.style.display !== 'none') showMemberDBModal();
 });
 
 document.getElementById('btn-clear-registrations').addEventListener('click', () => {
@@ -11241,7 +11087,7 @@ async function testSamApiUrl() {
 <div id="app-footer">
   <div>&copy; 2026 <span id="footer-club-name">${getClub().name}</span> &nbsp;&middot;&nbsp; Knoxville, TN</div>
   <div><a href="mailto:etccwebsite.webmanager@gmail.com">etccwebsite.webmanager@gmail.com</a></div>
-  <div>Version: <span id="app-version">v6.8</span> &nbsp;&middot;&nbsp; Deployed: <span id="app-deploy-date">Aug 31, 2026 3:12 PM</span></div>
+  <div>Version: <span id="app-version">v6.9</span> &nbsp;&middot;&nbsp; Deployed: <span id="app-deploy-date">Sep 14, 2026 9:34 AM</span></div>
   <div>Website by Business Web Express &nbsp;&middot;&nbsp; <a href="mailto:info@businesswebexpress.com">info@businesswebexpress.com</a></div>
 </div>
 

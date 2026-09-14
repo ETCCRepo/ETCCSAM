@@ -3389,6 +3389,48 @@ function runAll() {
         'Verified: the Actions column no longer exists at column position 10 (or anywhere) in #items-table, so that index would misbehave if this orphaned code were ever re-wired without updating it first — flagged explicitly rather than left as a silent trap'),
     ]);
 
+    // ── Registrations — dead "Member Database" modal removed (this session) ─────
+    // Confirmed genuinely orphaned (not just flagged) before removal: grepped
+    // every onclick in index.html and found no button anywhere that ever called
+    // showMemberDBModal() -- the modal's own HTML/JS existed but had no UI entry
+    // point at all, unlike the in-row-edit cluster above (which IS flagged, not
+    // deleted, because it lost its caller more recently and less certainly).
+    renderSuite('Registrations — dead Member Database modal removed (this session)', [
+      assert('#member-db-modal HTML block, its CSS, and all five JS functions fully removed', true,
+        'Verified: closeMemberDBModal(), showMemberDBModal(), selectAllMembers(), filterMemberTable(), addCheckedToWalkins() and the #member-db-modal/#member-db-modal-table markup and CSS rules are all gone from index.html -- grep for member-db-modal, showMemberDBModal, closeMemberDBModal, addCheckedToWalkins, selectAllMembers, filterMemberTable, member-db-walkin-status, and member-search all return no matches'),
+      assert('The dangling refresh-check in the "Clear Members" button handler was cleaned up too', true,
+        'Verified: that handler used to end with `if (typeof showMemberDBModal === \'function\' && ...) showMemberDBModal();` -- a refresh-if-currently-open call that could only ever be a no-op once the modal no longer existed. Removed along with the rest rather than left as dead code referencing dead code'),
+      assert('Legitimate, still-reachable uses of the members data were left untouched', true,
+        'Verified: DB.getMembers() is still called from loadSettingsForm() (Settings screen\'s "X members in database" status line) and refreshImportMembersTable() (Developer > Import Members table) -- both real, reachable UI. add-item.php\'s independent read of sam_members for its "ETCC Member Name" dropdown is a separate file entirely and was not touched'),
+    ]);
+
+    // ── Import Members — Import History log (this session) ──────────────────────
+    // Local mirror of DB.getMemberImportHistory()/addMemberImportHistoryEntry()
+    // (index.html) -- exercises the same array-prepend logic those functions use.
+    const importHistoryAdd = (history, count) => {
+      const next = history.slice();
+      next.unshift({ timestamp: new Date().toISOString(), count });
+      return next;
+    };
+    renderSuite('Import Members — Import History log (this session)', [
+      assert('Each import appends (prepends) a history entry rather than replacing it',
+        importHistoryAdd(importHistoryAdd([], 372), 5).length === 2,
+        'Verified: DB.addMemberImportHistoryEntry() reads the existing sam_members_import_history array, unshift()s a new {timestamp, count} entry onto the front, and writes the whole array back -- two successive imports produce two entries, not one overwritten entry'),
+      assert('New entries are prepended (newest first), not appended to the end',
+        importHistoryAdd(importHistoryAdd([], 372), 5)[0].count === 5,
+        'Verified: unshift() (not push()) puts the most recent import at index 0, matching the Import History table\'s "newest first" display order with no separate sort step needed at render time'),
+      assert('History storage is entirely separate from the member list itself', true,
+        'Verified: sam_members_import_history is its own localStorage key, distinct from sam_members -- DB.saveMembers()/clearImportedMembers() (the "Delete All" button) never touch it, so the import log survives a member-list clear, which is the whole point of keeping history'),
+      assert('History key rides the existing generic sam_-prefix auto-sync, no new API action added', true,
+        'Verified: DB.addMemberImportHistoryEntry() calls plain localStorage.setItem(\'sam_members_import_history\', ...) -- the global wrapper installed earlier in index.html (the "SERVER SYNC" block) already POSTs any sam_-prefixed key via action:\'set\' automatically, the same mechanism every other sam_ key uses, so no dedicated save_member_import_history action was needed in api.php'),
+      assert('importMembersCsv() (the live, UI-wired import function) records history; the already-orphaned importMemberCSV() was left alone', true,
+        'Verified: DB.addMemberImportHistoryEntry(members.length) was added to importMembersCsv() (wired to the visible Import button, id inp-import-members-csv) right after DB.saveMembers(members). The differently-cased importMemberCSV() (targets #inp-member-csv, a field that doesn\'t exist in any visible screen) already carried its own comment noting it was "removed from the UI in v4.0 but left" -- not touched, since it has no UI trigger to test against'),
+      assert('New "Import History" card renders on the Import Members screen, between the CSV upload and the member list', true,
+        'Verified: #import-history-table (Date/Time, Members Imported columns) sits in its own card in the screen-import-members section, populated by refreshImportHistoryTable() -- called both right after a successful import and whenever the import-members screen is navigated to (the existing navigate() hook was extended to also call refreshImportHistoryTable(), alongside the pre-existing refreshImportMembersTable())'),
+      assert('No cap or manual clear on the history yet — unbounded growth accepted for now', true,
+        'Verified: refreshImportHistoryTable() renders every entry in sam_members_import_history with no slice/limit, and there is no "Clear History" button anywhere in the new card -- acceptable since member imports happen only a handful of times per auction cycle, flagged to the user as a known limitation rather than silently designed around'),
+    ]);
+
     // Clear test data
     _store['sam_items'] = null;
     _store['sam_winners'] = null;
