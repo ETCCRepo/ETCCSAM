@@ -1,6 +1,6 @@
 # SAM Project Status
 
-**Last updated:** 2026-09-15 — **checkpoint v6.13**: added `Gladiator#1` as a **second, fixed login password** on the main app login (explicit user request), always accepted alongside whatever Login/Settings password is currently set. `test.html` was manually confirmed green before the checkpoint proceeded; everything is committed and the deployed code matches the commit. **⚠️ Read open item #1a below before assuming the password-hardening work from the v6.10 session (same password-corruption investigation) is still fully in effect** — this session reintroduces a fixed literal password, deliberately, but it's worth knowing the history if a similar "which password actually works" question comes up again.
+**Last updated:** 2026-09-15, later same day — **checkpoint v6.14**: Home screen gained three new summary boxes (Open Auction / Premier Auction / Total) between the 4-stat metrics row and the Auction Workflow card, each showing Number of Items, Total Value, and Total Winning Bid, reusing the same OPEN/PREMIUM Value split `printBiddingSheets()` already uses. `test.html` was confirmed green before the checkpoint; everything is committed and the deployed code matches the commit. **Note: this write-up was added retroactively** — the v6.14 checkpoint itself was completed and pushed in a session whose conversation history isn't available to this doc; the detail below comes from that commit's message/diff, not a first-hand session narrative, so it's necessarily thinner than most other entries in this file.
 
 This file exists so a brand-new Claude Code session can resume this work with zero prior conversation context. Read this alongside `CLAUDE.md` (architecture/rules) before touching code.
 
@@ -8,9 +8,9 @@ This file exists so a brand-new Claude Code session can resume this work with ze
 
 ## Current state (as of this doc)
 
-- **Deployed version:** **v6.13** (`index.html` footer `#app-version`) — deployed code matches the latest checkpoint commit, no drift.
-- **Git:** `main` branch, last commit `21285b0` ("Checkpoint v6.13: add Gladiator#1 as a second fixed login password"), pushed to `origin`. Working tree is clean.
-- **`test.html` was updated this session and manually confirmed green by the user** before the v6.13 checkpoint proceeded.
+- **Deployed version:** **v6.14** (`index.html` footer `#app-version`) — deployed code matches the latest checkpoint commit, no drift.
+- **Git:** `main` branch, last commit `4b83253` ("Checkpoint v6.14: Home screen Open/Premier/Total auction summary boxes"), pushed to `origin`. Working tree is clean.
+- **`test.html` was updated for v6.14 and confirmed green by the user** before that checkpoint proceeded.
 - **No uncommitted app-code work** as of this doc.
 - **New in v6.13:** the main app login (`api.php`'s `login` action — this is the initial app-access password screen, **not** the Developer/Settings gate) now always accepts the literal `'Gladiator#1'` in addition to whatever the Login Password or Settings Password are currently set to. See open item #1a below for the full detail and the tradeoff this reintroduces.
 - **New in v6.12 (previous checkpoint, still current):**
@@ -41,6 +41,33 @@ This file exists so a brand-new Claude Code session can resume this work with ze
 16. **⚠️ Known weakness, explicitly flagged to the user and left unfixed this session: the Developer/Settings password is still shipped in plaintext to every logged-in browser.** `get_all`'s flat key-value dump includes `sam_settings`, which contains `settingsPassword` — so while the server-side gate (`verify_settings_password`) now genuinely checks the server rather than trusting the client, a user with browser devtools open (or reading `localStorage.sam_settings`) can still read the actual Developer password directly, bypassing the "prompt" entirely. This is a pre-existing architectural issue, not something this session introduced or worsened — fixing it properly would mean excluding password fields from `get_all`'s response and reworking every client-side spot that currently reads `settings.settingsPassword` (e.g. the maintenance-mode bypass at `index.html` ~line 9428, which deliberately uses it as a bypass password). Not attempted this session; flag it if the user wants it addressed, since it's a real (if lower-severity, requires devtools access) exposure.
 18. **⚠️ Restore-from-backup is a new, genuinely destructive feature (v6.12) — read before touching backup/restore code.** `restoreDatabaseBackup()` (`security-helpers.php`) does a hard `DELETE FROM` (whole-table for a full restore, or `WHERE auction_id = ?`/`WHERE id = ?` for a scoped one) followed by re-`INSERT`ing every row from the backup file — there is no merge/diff logic. It **always** takes its own fresh whole-database safety backup first (unconditionally, even for a scoped restore) and wraps the actual restore in a transaction with `FOREIGN_KEY_CHECKS` toggled off/on around it (a per-connection setting, not part of the transaction — explicitly reset in both the success and failure paths, not just relied on via rollback). `SAM_BACKUP_TABLES` (now includes `'auctions'`, see above) and `SAM_AUCTION_SCOPED_TABLES` (which column identifies "this auction" per table) are the two shared constants that keep backup/restore from drifting apart — if a new per-auction table is ever added to the schema, both need updating together, or a scoped restore will silently miss it. `sam_read_backup_file()` transparently handles the new `.zip` format (v6.11+) and the older raw `.sql`/`.sql.gz` formats by locating the JSON payload by its first `{` rather than assuming a fixed header-line count — don't assume every backup on disk is a `.zip` just because that's now the default. A restore's own history log row (`reason:'restore'`) has no downloadable file of its own (it records what was restored *from*, which may since have been purged) — only `reason:'success'`/`'pre-restore'` rows are restorable/downloadable from the UI.
 19. **⚠️ The Registrations screen's "Member Database" modal is gone as of v6.9 — do not assume the walk-in-from-roster flow still exists.** `showMemberDBModal()`/`closeMemberDBModal()`/`selectAllMembers()`/`filterMemberTable()`/`addCheckedToWalkins()` and the `#member-db-modal` HTML/CSS were **deleted outright**, not flagged-and-kept — confirmed via grep that no button anywhere called `showMemberDBModal()` before removing it (unlike the in-row-edit cluster in item #12, which is still flagged-but-kept because its orphaning was more recent/less certain). If a future request wants "search the member roster and add someone as a walk-in bidder" back, that's new work from scratch, not a revert — the code no longer exists in the file at all, only in git history before commit `9a1deb5`. Two things that still legitimately read `sam_members`/`DB.getMembers()` and were left alone: `loadSettingsForm()`/`refreshImportMembersTable()` (read-only display) and `add-item.php`'s independent "ETCC Member Name" dropdown (a separate file). Also new in v6.9: a **member Import History log** (`sam_members_import_history`, a new localStorage key, auto-synced like every other `sam_`-prefixed key) — each CSV import via `importMembersCsv()` now appends a `{timestamp, count}` entry, rendered in its own card on the Import Members screen, deliberately untouched by "Delete All" so the log outlives a member-list clear. No cap or manual-clear control exists on this log yet (unbounded growth, accepted for now — imports are infrequent).
+20. **Home screen's Open/Premier/Total auction summary boxes (v6.14) read from the SAME OPEN/PREMIUM threshold as bid sheets** (`Settings → Auction Setup → "Open Bids"`, default $35, `item_value` alone — never reserve). If that threshold or the OPEN/PREMIUM membership rule ever changes (see open item #6 above), `refreshHomeAuctionTypeSummary()` needs to change with it, or Home's boxes will silently disagree with what actually prints on the bid sheets for the same items.
+
+---
+
+## What was accomplished this session (checkpoint v6.14)
+
+**Note:** this write-up was reconstructed from the checkpoint commit's message and diff — the session that did this work isn't available to narrate here, so it's necessarily thinner (no "why"/back-and-forth detail) than sessions documented from live conversation.
+
+### New feature — Home screen Open/Premier/Total auction summary boxes
+Three new boxes render between the existing 4-stat metrics row and the Auction Workflow card on Home: **Open Auction**, **Premier Auction**, and a combined **Total**, each showing Number of Items, Total Value, and Total Winning Bid.
+
+- New `refreshHomeAuctionTypeSummary(items, winners)` (`index.html`), called from inside `refreshHomeMetrics()` so every existing call site of that function picks up the new boxes automatically, with no new call sites needed elsewhere.
+- Uses the exact same OPEN vs. PREMIUM split `printBiddingSheets()` already uses: an item is OPEN when `item_value` alone (never reserve) is `<=` `Settings → Auction Setup → "Open Bids"` (default $35); everything above that is PREMIUM (labeled "Premier" on-screen, per the requested wording).
+- **Total Winning Bid** only sums items that have an actual recorded winner (`winners[item.item_number].winning_bid`) — an unsold item still contributes to Number of Items and Total Value, but not Total Winning Bid.
+- New container `#home-auction-type-summary`, a 3-column grid, rendered right after `#home-metrics` in the Home screen markup.
+
+### `test.html` updated, confirmed green
+New suite with executable math checks against a synthetic items/winners dataset (per the commit message — exact assertion count/wording not available without the session's own narrative).
+
+### Checkpoint v6.14 (minor version bump)
+Straightforward minor bump from v6.13.
+
+### Files touched this session
+| File | Status | Notes |
+|---|---|---|
+| `index.html` | committed (`4b83253`) | `#home-auction-type-summary` container; `refreshHomeAuctionTypeSummary()`; call wired into `refreshHomeMetrics()`; version bump to v6.14 |
+| `test.html` | committed (`4b83253`) | New suite, synthetic-dataset math checks. Confirmed green by the user. |
 
 ---
 
