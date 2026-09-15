@@ -21,8 +21,8 @@
        Screen") — it only looks at apple-touch-icon. Kept in sync with the same
        Club Branding favicon by updateFavicon() below. -->
   <link rel="apple-touch-icon" id="apple-touch-icon-link" href="Images/ETCClogoWhiteBackground.png" />
-  <link rel="stylesheet" href="css/table.css?v=1789433885" />
-  <link rel="stylesheet" href="css/toolbar.css?v=1789433885" />
+  <link rel="stylesheet" href="css/table.css?v=1789455573" />
+  <link rel="stylesheet" href="css/toolbar.css?v=1789455573" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -937,6 +937,13 @@
           </div>
 
           <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px;" id="home-metrics"></div>
+
+          <!-- Open vs. Premier auction summary — same OPEN/PREMIUM split
+               printBiddingSheets() uses (item_value <= Settings > Auction
+               Setup > "Open Bids", default $35). Populated by
+               refreshHomeAuctionTypeSummary(), called alongside
+               refreshHomeMetrics() wherever the Home screen's stats refresh. -->
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;" id="home-auction-type-summary"></div>
 
           <div class="card" style="margin-bottom:0;">
             <div class="card-header">Auction Workflow</div>
@@ -2422,8 +2429,8 @@
 </div>
 
 <!-- Scripts -->
-<script src="js/table.js?v=1789433885"></script>
-<script src="js/toolbar.js?v=1789433885"></script>
+<script src="js/table.js?v=1789455573"></script>
+<script src="js/toolbar.js?v=1789455573"></script>
 <script>
 (function() {
   const _origInit = PageToolbar.init.bind(PageToolbar);
@@ -6666,6 +6673,53 @@ function refreshHomeMetrics() {
     const badge = document.getElementById('step-badge-' + (i + 1));
     if (badge) badge.classList.toggle('done', isDone);
   });
+
+  refreshHomeAuctionTypeSummary(items, winners);
+}
+
+// Home screen — Open vs. Premier auction summary box. Uses the SAME
+// OPEN/PREMIUM split printBiddingSheets() uses for bid sheets: an item is
+// OPEN when its item_value alone (never reserve — see the bid-sheet-algorithm
+// open item in PROJECT_STATUS.md) is <= Settings > Auction Setup > "Open
+// Bids" (default $35); everything above that is PREMIUM ("Premier" here, to
+// match the label the user asked for). A third box shows the combined total
+// across both. For each box: item count, total item value, and total winning
+// bid (summed only over items that actually have a recorded winner — an
+// unsold item contributes to Number of Items and Total Value but not Total
+// Winning Bid).
+function refreshHomeAuctionTypeSummary(items, winners) {
+  const el = document.getElementById('home-auction-type-summary');
+  if (!el) return;
+  const openBidMax = parseMoney(DB.getSettings().openBidMax ?? 35);
+
+  const groups = {
+    open:    { label: 'Open Auction',    count: 0, totalValue: 0, totalWinningBid: 0 },
+    premier: { label: 'Premier Auction', count: 0, totalValue: 0, totalWinningBid: 0 },
+  };
+  (items || []).forEach(item => {
+    const value = parseMoney(item.item_value ?? item.value);
+    const g = value <= openBidMax ? groups.open : groups.premier;
+    g.count++;
+    g.totalValue += value;
+    const winner = winners && winners[item.item_number];
+    if (winner && winner.winning_bid) g.totalWinningBid += parseMoney(winner.winning_bid);
+  });
+  const total = {
+    label: 'Total',
+    count: groups.open.count + groups.premier.count,
+    totalValue: groups.open.totalValue + groups.premier.totalValue,
+    totalWinningBid: groups.open.totalWinningBid + groups.premier.totalWinningBid,
+  };
+
+  el.innerHTML = [groups.open, groups.premier, total].map(g => `
+    <div class="card" style="margin-bottom:0;">
+      <div class="card-header">${escHtml(g.label)}</div>
+      <div style="padding:10px;display:flex;flex-direction:column;gap:6px;">
+        <div class="metric-card"><div class="m-label">Number of Items</div><div class="m-value accent">${g.count}</div></div>
+        <div class="metric-card"><div class="m-label">Total Value</div><div class="m-value accent">${fmtDollar(g.totalValue)}</div></div>
+        <div class="metric-card"><div class="m-label">Total Winning Bid</div><div class="m-value accent">${fmtDollar(g.totalWinningBid)}</div></div>
+      </div>
+    </div>`).join('');
 }
 
 // A step is "complete" when its timestamp key exists in storage.
@@ -11443,7 +11497,7 @@ async function testSamApiUrl() {
 <div id="app-footer">
   <div>&copy; 2026 <span id="footer-club-name">${getClub().name}</span> &nbsp;&middot;&nbsp; Knoxville, TN</div>
   <div><a href="mailto:etccwebsite.webmanager@gmail.com">etccwebsite.webmanager@gmail.com</a></div>
-  <div>Version: <span id="app-version">v6.13</span> &nbsp;&middot;&nbsp; Deployed: <span id="app-deploy-date">Sep 15, 2026 12:58 AM</span></div>
+  <div>Version: <span id="app-version">v6.14</span> &nbsp;&middot;&nbsp; Deployed: <span id="app-deploy-date">Sep 15, 2026 6:59 AM</span></div>
   <div>Website by Business Web Express &nbsp;&middot;&nbsp; <a href="mailto:info@businesswebexpress.com">info@businesswebexpress.com</a></div>
 </div>
 
