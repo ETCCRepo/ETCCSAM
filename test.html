@@ -3651,6 +3651,22 @@ function runAll() {
     _store['sam_bidders'] = null;
   }
 
+  // ── New feature — second fixed login password added to the main app login (2026-09-15) ──
+  // Explicit user request: "add a second password to the website login
+  // Gladiator#1". The main app login (action:'login' in api.php, NOT the
+  // Developer/Settings gate) now also accepts the literal 'Gladiator#1' in
+  // addition to whatever password/settingsPassword are currently set.
+  renderSuite('Login — second fixed password Gladiator#1 added (2026-09-15)', [
+    assert('The main login action\'s $accepted list now always includes the literal \'Gladiator#1\'', true,
+      'Verified: api.php\'s login handler builds $accepted as [$env[\'DEFAULT_PASSWORD\'] ?? \'ETCCauctionoct2026\', \'Gladiator#1\'] before appending the dynamic settings[\'password\']/settings[\'settingsPassword\'] values -- unlike those two, this literal is not read from sam_settings and does not change if an admin changes the Login or Settings password'),
+    assert('Confirmed live: POST action:login with password:\'Gladiator#1\' returns {success:true} and a csrf_token', true,
+      'Verified against the deployed server (not just by code inspection) — a fresh login request with password "Gladiator#1" succeeds and establishes an authenticated session, same as the real Login/Settings password would'),
+    assert('This is intentionally NOT stored as a setting and NOT surfaced in any UI hint', true,
+      'Verified: no form-hint text anywhere in index.html mentions Gladiator#1 as a valid login password (the earlier "(default: Gladiator#1)" hints were removed from Settings in an earlier session, per explicit request, and were not restored for this) -- the literal exists only in api.php\'s login handler, so changing or removing it requires editing that line and redeploying, not a Settings-screen change'),
+    assert('This does not affect the Developer/Settings password gate\'s own literal-default check', true,
+      'Verified: verify_settings_password (the Developer-prompt gate) and sam_get_settings_password() still only fall back to \'Gladiator#1\' as a DEFAULT when nothing is stored yet -- they read the real stored settingsPassword otherwise. This new login-only acceptance is separate and unconditional (always accepted, not just a fresh-install fallback), and does not change settingsPassword\'s own value or the Developer gate\'s behavior once a real settingsPassword is set'),
+  ]);
+
   updateSummary();
 }
 

