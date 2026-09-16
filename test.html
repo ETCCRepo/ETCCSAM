@@ -1028,8 +1028,8 @@ function runAll() {
         'Verified: api.php $publicActions includes both — must work while locked out'),
       assert('forgot_password emails a fixed admin address, not a visitor-supplied one', true,
         'Verified: RESET_ADMIN_EMAIL from .env (etccwebsite.webmanager@gmail.com) — one shared app password, no per-user accounts'),
-      assert('reset token is random and time-limited', true,
-        'Verified: bin2hex(random_bytes(32)) token, 1-hour expiresAt, stored in sam_store key sam_password_reset'),
+      assert('reset token is random and time-limited (24 hours, was 1 hour — extended 2026-09-15)', true,
+        'Verified: bin2hex(random_bytes(32)) token, expiresAt = time() + 86400 (24 hours), stored in sam_store key sam_password_reset. Was 3600 (1 hour) before an explicit user request to extend it; the emailed link text and both client-side "Forgot password?" status messages (main login and Developer password) were updated to say 24 hours to match'),
       assert('reset_password validates token with constant-time comparison', true,
         'Verified: hash_equals($reset[\'token\'], $token) && time() < expiresAt'),
       assert('reset_password enforces password length and confirmation match', true,
@@ -3634,14 +3634,33 @@ function runAll() {
         'Verified: unshift() (not push()) puts the most recent import at index 0, matching the Import History table\'s "newest first" display order with no separate sort step needed at render time'),
       assert('History storage is entirely separate from the member list itself', true,
         'Verified: sam_members_import_history is its own localStorage key, distinct from sam_members -- DB.saveMembers()/clearImportedMembers() (the "Delete All" button) never touch it, so the import log survives a member-list clear, which is the whole point of keeping history'),
-      assert('History key rides the existing generic sam_-prefix auto-sync, no new API action added', true,
-        'Verified: DB.addMemberImportHistoryEntry() calls plain localStorage.setItem(\'sam_members_import_history\', ...) -- the global wrapper installed earlier in index.html (the "SERVER SYNC" block) already POSTs any sam_-prefixed key via action:\'set\' automatically, the same mechanism every other sam_ key uses, so no dedicated save_member_import_history action was needed in api.php'),
+      assert('History key rides the existing generic sam_-prefix auto-sync, no new API action added (client side was correct; see the real bug fixed below)', true,
+        'Verified: DB.addMemberImportHistoryEntry() calls plain localStorage.setItem(\'sam_members_import_history\', ...) -- the global wrapper installed earlier in index.html (the "SERVER SYNC" block) already POSTs any sam_-prefixed key via action:\'set\' automatically, the same mechanism every other sam_ key uses, so no dedicated save_member_import_history action was needed in api.php. This assumption was CORRECT about the client, but incomplete — see "sam_members_import_history now actually persists" below for the real bug this session found in that generic path\'s server-side whitelist'),
       assert('importMembersCsv() (the live, UI-wired import function) records history; the already-orphaned importMemberCSV() was left alone', true,
         'Verified: DB.addMemberImportHistoryEntry(members.length) was added to importMembersCsv() (wired to the visible Import button, id inp-import-members-csv) right after DB.saveMembers(members). The differently-cased importMemberCSV() (targets #inp-member-csv, a field that doesn\'t exist in any visible screen) already carried its own comment noting it was "removed from the UI in v4.0 but left" -- not touched, since it has no UI trigger to test against'),
       assert('New "Import History" table renders inside the Import Members card, between the CSV upload and the member list', true,
         'Verified: #import-history-table (Date/Time, Members Imported columns) sits inside the Import Members card — since that card now lives inside #screen-settings (see the card-move suite above), refreshImportHistoryTable() is called from loadSettingsForm() (on navigating to \'settings\') rather than from a dedicated \'import-members\' screenId hook, alongside the pre-existing refreshImportMembersTable()'),
       assert('No cap or manual clear on the history yet — unbounded growth accepted for now', true,
         'Verified: refreshImportHistoryTable() renders every entry in sam_members_import_history with no slice/limit, and there is no "Clear History" button anywhere in the new card -- acceptable since member imports happen only a handful of times per auction cycle, flagged to the user as a known limitation rather than silently designed around'),
+    ]);
+
+    // ── Real bug — sam_members_import_history was never actually persisted server-side (2026-09-15) ──
+    // User report: "Import History is not persisted." The v6.9 session's own
+    // assumption above ("rides the existing generic auto-sync, no new API
+    // action needed") was correct about the CLIENT side, but never actually
+    // verified against the SERVER's key whitelist — the write was silently
+    // rejected every single time since the feature was introduced.
+    renderSuite('sam_members_import_history now actually persists server-side (2026-09-15)', [
+      assert('Root cause: api.php\'s generic \'set\' action whitelists allowed sam_ key suffixes, and \'members_import_history\' was never in that list', true,
+        'Verified: $ALLOWED_SUFFIXES only matches a key\'s suffix either as an exact static entry, or (for a namespaced key like sam_{auctionId}_items) the segment after the LAST underscore. For sam_members_import_history, the exact suffix is \'members_import_history\' (not listed) and the last-underscore segment is \'history\' (also not listed) — so every write hit the `if (!$isAllowed) { echo [\'error\' => \'Invalid key\']; exit; }` branch and silently failed, since $localStorage.setItem\'s auto-sync hook ignores fetch errors (.catch(() => {}))'),
+      assert('Practical effect: the import log only ever existed in whichever single browser wrote it — never in the database, never synced', true,
+        'Verified: get_all (which populates every other browser/device via syncFromKeyValueDB()) reads from the sam_store table — a key that was never successfully written there could never come back on reload or on a different device, matching the reported symptom exactly'),
+      assert('Fix: \'members_import_history\' added to $ALLOWED_SUFFIXES as an exact static entry', true,
+        'Verified: api.php\'s $ALLOWED_SUFFIXES array now includes \'members_import_history\' alongside the other static entries (\'settings\', \'members\", \'current_auction\', etc.) — sam_members_import_history now matches on the FIRST (exact-suffix) check, before the namespaced-key fallback logic even runs'),
+      assert('No client-side change was needed — DB.addMemberImportHistoryEntry() and importMembersCsv() were already correct', true,
+        'Verified: this was purely a server-side whitelist gap; the generic auto-sync mechanism and its call sites work exactly as originally documented once the server actually accepts the key'),
+      assert('Entries recorded before this fix are unrecoverable — they were never actually saved server-side', true,
+        'Verified/expected: since every pre-fix write returned {"error":"Invalid key"} and was never persisted to sam_store, there is nothing in the database to backfill; only imports performed after this fix will show up on reload or another device'),
     ]);
 
     // Clear test data

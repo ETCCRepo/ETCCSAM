@@ -395,7 +395,14 @@ $pass = $env['DB_PASS'];
 
 // Allowed key suffixes (after sam_ prefix). Supports both static keys (sam_items)
 // and namespaced keys (sam_{auctionId}_items)
-$ALLOWED_SUFFIXES = ['items', 'bidders', 'winners', 'payments', 'settings', 'fieldmap', 'emails', 'members', 'regdb', 'auctions', 'current_auction'];
+// 'members_import_history' added 2026-09-15 — a real bug: sam_members_import_history
+// (added in v6.9) was assumed to ride this generic sam_-prefix auto-sync with no new
+// API action needed, but its key ('sam_' + 'members_import_history') never actually
+// matched this whitelist — 'members_import_history' isn't an exact static suffix, and
+// splitting at the LAST underscore gives 'history', which also isn't allowed. Every
+// write was silently rejected server-side ({"error":"Invalid key"}), so the import log
+// only ever lived in whichever single browser wrote it — never persisted, never synced.
+$ALLOWED_SUFFIXES = ['items', 'bidders', 'winners', 'payments', 'settings', 'fieldmap', 'emails', 'members', 'members_import_history', 'regdb', 'auctions', 'current_auction'];
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass, [
@@ -700,7 +707,7 @@ if ($action === 'login') {
     }
 
     $token = bin2hex(random_bytes(32));
-    $expiresAt = time() + 3600; // 1 hour
+    $expiresAt = time() + 86400; // 24 hours
     try {
         $stmt = $pdo->prepare(
             "INSERT INTO sam_store (`key`, `value`) VALUES (?, ?)
@@ -719,7 +726,7 @@ if ($action === 'login') {
         ? 'Silent Auction Manager — Developer password reset requested'
         : 'Silent Auction Manager — password reset requested';
     $body = "A password reset was requested for Silent Auction Manager's $what.\n\n" .
-        "Reset it here (link expires in 1 hour):\n" . $resetUrl . "\n\n" .
+        "Reset it here (link expires in 24 hours):\n" . $resetUrl . "\n\n" .
         "If you didn't request this, you can ignore this email — the link " .
         "expires on its own and nothing changes until someone opens it.";
 
