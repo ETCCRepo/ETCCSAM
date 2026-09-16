@@ -286,7 +286,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['description'])) {
   <div class="sub">Item Donation</div>
   <div class="panel">
     <?php if ($success): ?>
-      <div class="success">Item <?php echo htmlspecialchars($lastItemNumber); ?> was added successfully. You can add another below.</div>
+      <div class="success">Item <?php echo htmlspecialchars($lastItemNumber); ?> was added successfully. Closing…</div>
     <?php endif; ?>
     <?php if ($errors): ?>
       <div class="errors"><strong>Please fix the following:</strong><ul>
@@ -383,12 +383,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['description'])) {
         })();
       </script>
       <div class="btn-row">
-        <button type="button" class="btn btn-secondary" onclick="window.close(); setTimeout(function(){ location.href='index.html'; }, 150);">Done</button>
+        <button type="button" class="btn btn-secondary" onclick="window.close(); setTimeout(function(){ location.href='index.html'; }, 150);">Cancel</button>
         <button type="submit" class="btn">Donate Item</button>
       </div>
     </form>
   </div>
   <div class="footer">&copy; 2026 East Tennessee Corvette Club &middot; Knoxville, TN &middot; <a href="mailto:etccwebsite.webmanager@gmail.com">etccwebsite.webmanager@gmail.com</a></div>
 </div>
+<?php if ($success): ?>
+<script>
+  // Donate Item successfully added the item server-side (full-page POST) —
+  // close the form now instead of leaving it open for another entry, per
+  // explicit request. Same window.close()-then-fallback-redirect pattern the
+  // Cancel button already uses, for when this wasn't opened via window.open()
+  // (e.g. reached directly) and window.close() is a no-op.
+  window.close();
+  setTimeout(function(){ location.href = 'index.html'; }, 150);
+</script>
+<?php endif; ?>
 </body>
 </html>

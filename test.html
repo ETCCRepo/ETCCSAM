@@ -1586,11 +1586,25 @@ function runAll() {
         'Verified: app init (the block that calls TableKit.initAll()/fixAllStickyHeaders()/applyBranding()) also calls applyItemsZoom(parseInt(localStorage.getItem(sam_items_zoom)) || 100) so the saved percentage is restored on every page load'),
     ]);
 
-    renderSuite('add-item.php — reachable from Step 1, "Done" button behavior (this session)', [
+    renderSuite('add-item.php — reachable from Step 1, button behavior', [
       assert('"+ Add Item" opens add-item.php in a new tab', true,
         'Verified: onclick="window.open(\'add-item.php\', \'_blank\')" on the Donated Items toolbar button'),
-      assert('"Cancel" button relabeled "Done" and tries to close the tab first', true,
-        'Verified: onclick="window.close(); setTimeout(function(){ location.href=\'index.html\'; }, 150);" — window.close() succeeds since the tab was opened via window.open() from the app; if the browser refuses (e.g. the page was reached directly, not via script), the 150ms fallback navigates to index.html instead of just re-displaying the blank form'),
+      assert('"Done" button relabeled back to "Cancel" (2026-09-16) — does not add an item', true,
+        'Verified: relabeled from "Done" back to "Cancel" per explicit request; onclick is unchanged — window.close(); setTimeout(function(){ location.href=\'index.html\'; }, 150); — window.close() succeeds since the tab was opened via window.open() from the app; if the browser refuses (e.g. the page was reached directly, not via script), the 150ms fallback navigates to index.html. Only the label changed, not the no-submit behavior, which was already correct'),
+    ]);
+
+    // ── Real behavior change — "Donate Item" now closes the form after a successful save (2026-09-16) ──
+    // Previously: a successful POST reloaded the same page with a success
+    // banner ("You can add another below") and left the form open, cleared,
+    // for another entry. Explicit request: "Donate Item adds a new item and
+    // closes form" — changed to close automatically instead of staying open.
+    renderSuite('add-item.php — "Donate Item" closes the form after a successful save (2026-09-16)', [
+      assert('A successful submission now runs the same window.close()-then-redirect script as Cancel', true,
+        'Verified: a PHP-conditional inline script (only rendered when $success is true) calling window.close() then setTimeout(...location.href=\'index.html\'...) was added right before the closing body tag — fires only when the item was actually saved, not on a validation-error re-render'),
+      assert('Success message text updated to match the new closing behavior', true,
+        'Verified: "Item X was added successfully. You can add another below." → "Item X was added successfully. Closing…" — the old text was accurate for the old stay-open behavior and became misleading once the form closes immediately'),
+      assert('This only fires after a genuine server-side save, not on every page load', true,
+        'Verified: $success starts false and is only set true inside the try block after the INSERT actually succeeds (and the transaction, if any, would have committed) — a GET request or a failed validation pass leaves $success false and the close script is never rendered'),
     ]);
 
     renderSuite('Multi-tab sync — auto re-sync on tab focus (this session)', [
