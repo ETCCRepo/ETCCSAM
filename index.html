@@ -21,8 +21,8 @@
        Screen") — it only looks at apple-touch-icon. Kept in sync with the same
        Club Branding favicon by updateFavicon() below. -->
   <link rel="apple-touch-icon" id="apple-touch-icon-link" href="Images/ETCClogoWhiteBackground.png" />
-  <link rel="stylesheet" href="css/table.css?v=1789579904" />
-  <link rel="stylesheet" href="css/toolbar.css?v=1789579904" />
+  <link rel="stylesheet" href="css/table.css?v=1789658896" />
+  <link rel="stylesheet" href="css/toolbar.css?v=1789658896" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -2429,8 +2429,8 @@
 </div>
 
 <!-- Scripts -->
-<script src="js/table.js?v=1789579904"></script>
-<script src="js/toolbar.js?v=1789579904"></script>
+<script src="js/table.js?v=1789658896"></script>
+<script src="js/toolbar.js?v=1789658896"></script>
 <script>
 (function() {
   const _origInit = PageToolbar.init.bind(PageToolbar);
@@ -4374,7 +4374,7 @@ function refreshItemsTable() {
       <td style="white-space:nowrap;">${escHtml(item.email_date || '')}</td>
       <td>${escHtml(item.source || (item.email_message_id ? 'Email' : 'Added'))}</td>
       <td style="vertical-align:top;"><span class="badge ${catCode}" style="display:inline-block;white-space:normal;word-break:break-word;line-height:1.35;">${escHtml(String(item.category_code))} ${escHtml(item.category_name)}</span></td>
-      <td style="white-space:normal;word-break:break-word;vertical-align:top;">${escHtml(item.description)}</td>
+      <td style="white-space:normal;word-break:break-word;vertical-align:top;">${linkifyDesc(item.description)}</td>
       <td>${fmtDollar(item.item_value)}</td>
       <td>${parseMoney(item.reserve_amount) > 0 ? fmtDollar(item.reserve_amount) : ''}</td>
       <td style="white-space:normal;word-break:break-word;vertical-align:top;">${escHtml(item.donor_name)}</td>
@@ -5959,7 +5959,7 @@ function refreshWinnersTable() {
       <td style="font-weight:600;font-size:13px;">${escHtml(key)}</td>
       <td><input class="win-bid" style="${inpStyle}text-align:right;" value="${escHtml(String(w.winning_bid || ''))}" placeholder="$0.00" ${isReadOnly() ? 'disabled' : ''}></td>
       <td><select class="win-num" style="${selStyle}" ${isReadOnly() ? 'disabled' : ''}><option value="">— select bidder —</option>${bidderOptions}</select></td>
-      <td style="font-size:12px;white-space:normal;word-break:break-word;overflow-wrap:break-word;">${escHtml(item.description || '')}</td>
+      <td style="font-size:12px;white-space:normal;word-break:break-word;overflow-wrap:break-word;">${linkifyDesc(item.description || '')}</td>
       <td style="font-size:12px;">${fmtDollar(item.item_value)}</td>
       <td style="font-size:12px;">${parseMoney(item.reserve_amount) > 0 ? fmtDollar(item.reserve_amount) : ''}</td>
       <td style="text-align:center;"><button class="btn danger win-clear workflow-edit-btn" style="font-size:11px;padding:2px 8px;">Clear</button></td>
@@ -6089,7 +6089,7 @@ function refreshBsItemsTable() {
       <td><strong>${escHtml(String(item.item_number))}</strong></td>
       <td style="font-size:11px;white-space:nowrap;">${escHtml(item.email_date || '')}</td>
       <td style="vertical-align:top;"><span class="badge ${catCode}" style="display:inline-block;white-space:normal;word-break:break-word;line-height:1.35;">${escHtml(String(item.category_code))} ${escHtml(item.category_name)}</span></td>
-      <td style="white-space:normal;word-break:break-word;vertical-align:top;">${escHtml(item.description)}</td>
+      <td style="white-space:normal;word-break:break-word;vertical-align:top;">${linkifyDesc(item.description)}</td>
       <td>${fmtDollar(item.item_value)}</td>
       <td>${parseMoney(item.reserve_amount) > 0 ? fmtDollar(item.reserve_amount) : ''}</td>
       <td style="white-space:normal;word-break:break-word;vertical-align:top;">${escHtml(item.donor_name)}</td>
@@ -6598,6 +6598,29 @@ function fmtPhone(raw) {
 
 function escHtml(str) {
   return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Auto-links URL-like text (http(s)://…, www…, or a bare domain.tld like
+// "BusinessWebExpress.com") found inside donor-entered text, for READ-ONLY
+// on-screen displays only — never inside an editable <textarea>/<input> (a
+// textarea can't render an <a> anyway), and never on a printed/paper report,
+// where a clickable link is meaningless. Escapes first via escHtml(), then
+// wraps matches in a real <a> — since escaping runs first, a URL containing
+// HTML-special characters can't be used to break out of the attribute.
+function linkifyDesc(str) {
+  const escaped = escHtml(str);
+  const urlPattern = /((?:https?:\/\/|www\.)[^\s<]+|\b[a-z0-9-]+\.(?:com|net|org|io|co)\b(?:\/[^\s<]*)?)/gi;
+  return escaped.replace(urlPattern, (match) => {
+    // Trim trailing punctuation that's naturally part of the surrounding
+    // sentence, not the URL itself (e.g. "visit BusinessWebExpress.com." at
+    // the end of a sentence, or "(see BusinessWebExpress.com)").
+    const trailing = match.match(/[.,;:!?)\]]+$/);
+    const clean = trailing ? match.slice(0, -trailing[0].length) : match;
+    const suffix = trailing ? trailing[0] : '';
+    if (!clean) return match;
+    const href = /^https?:\/\//i.test(clean) ? clean : 'https://' + clean;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${clean}</a>${suffix}`;
+  });
 }
 
 function fmtDollar(val) {
@@ -10872,7 +10895,7 @@ function showCategoryItems(code, name) {
     tr.innerHTML = `
       <td>${escHtml(String(item.item_number || ''))}</td>
       <td>${escHtml(item.submission_date || '')}</td>
-      <td>${escHtml(item.description || '')}</td>
+      <td>${linkifyDesc(item.description || '')}</td>
       <td>${fmtDollar(item.item_value)}</td>
       <td>${parseMoney(item.reserve_amount) > 0 ? fmtDollar(item.reserve_amount) : ''}</td>
       <td>${escHtml(item.donor_name || '')}</td>
@@ -11497,7 +11520,7 @@ async function testSamApiUrl() {
 <div id="app-footer">
   <div>&copy; 2026 <span id="footer-club-name">${getClub().name}</span> &nbsp;&middot;&nbsp; Knoxville, TN</div>
   <div><a href="mailto:etccwebsite.webmanager@gmail.com">etccwebsite.webmanager@gmail.com</a></div>
-  <div>Version: <span id="app-version">v6.16</span> &nbsp;&middot;&nbsp; Deployed: <span id="app-deploy-date">Sep 16, 2026 5:31 PM</span></div>
+  <div>Version: <span id="app-version">v6.17</span> &nbsp;&middot;&nbsp; Deployed: <span id="app-deploy-date">Sep 17, 2026 3:28 PM</span></div>
   <div>Website by Business Web Express &nbsp;&middot;&nbsp; <a href="mailto:info@businesswebexpress.com">info@businesswebexpress.com</a></div>
 </div>
 

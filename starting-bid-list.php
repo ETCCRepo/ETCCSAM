@@ -28,6 +28,31 @@ $CATEGORIES = [
     '900' => 'Miscellaneous / Other',
 ];
 
+// Auto-links URL-like text (http(s)://…, www…, or a bare domain.tld like
+// "BusinessWebExpress.com") found inside a donor-entered description, for
+// this read-only on-screen page. Escapes first via htmlspecialchars(), then
+// wraps matches in a real <a> — mirrors linkifyDesc() in index.html (kept in
+// sync the same way the bid-sheet-algorithm comment above asks for).
+function sbl_linkify($str) {
+    $escaped = htmlspecialchars((string)$str, ENT_QUOTES);
+    $pattern = '/((?:https?:\/\/|www\.)[^\s<]+|\b[a-z0-9-]+\.(?:com|net|org|io|co)\b(?:\/[^\s<]*)?)/i';
+    return preg_replace_callback($pattern, function ($m) {
+        $match = $m[0];
+        // Trim trailing punctuation that's naturally part of the surrounding
+        // sentence, not the URL itself.
+        if (preg_match('/[.,;:!?)\]]+$/', $match, $trailMatch)) {
+            $clean = substr($match, 0, -strlen($trailMatch[0]));
+            $suffix = $trailMatch[0];
+        } else {
+            $clean = $match;
+            $suffix = '';
+        }
+        if ($clean === '') return $match;
+        $href = preg_match('/^https?:\/\//i', $clean) ? $clean : 'https://' . $clean;
+        return '<a href="' . $href . '" target="_blank" rel="noopener noreferrer">' . $clean . '</a>' . $suffix;
+    }, $escaped);
+}
+
 function sbl_load_env($envFile) {
     $env = [];
     if (file_exists($envFile)) {
@@ -138,7 +163,7 @@ usort($items, fn($a, $b) => strnatcasecmp((string)($a['item_number'] ?? ''), (st
       <td><?= htmlspecialchars($catCode) ?> — <?= htmlspecialchars((string)$catName) ?></td>
       <td><?= sbl_money($startingBid) ?></td>
       <td><?= htmlspecialchars((string)($item['donor_name'] ?? '')) ?></td>
-      <td><?= htmlspecialchars((string)($item['description'] ?? '')) ?></td>
+      <td><?= sbl_linkify((string)($item['description'] ?? '')) ?></td>
     </tr>
 <?php endforeach; ?>
     </tbody>

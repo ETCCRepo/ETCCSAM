@@ -1560,6 +1560,72 @@ function runAll() {
         'Verified: 🖨 Print calls window.print(); Done calls window.close() only — an earlier version that also fell back to location.href=\'index.html\' after 150ms (matching add-item.php\'s Done button, for pages that might not have been opened via window.open()) was simplified to close-only per explicit request, since this page is always reached directly by URL'),
     ]);
 
+    // ── New feature — description URLs auto-link on-screen (2026-09-17) ────────
+    // Request: "how to make a hotlink in the description" — user wanted a URL
+    // typed in an item's Description (e.g. "BusinessWebExpress.com") to render
+    // as a real clickable link wherever it's shown read-only on-screen, but
+    // NOT inside the editable textarea and NOT on printed/paper reports.
+    (function() {
+      // Local mirror of linkifyDesc()'s regex/logic (index.html), since the
+      // real function lives inside the app and isn't exported for direct
+      // unit testing here — same pattern this suite already uses elsewhere
+      // for algorithm mirrors (see the bid-ladder mirror above).
+      function escHtmlMirror(str) {
+        return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      }
+      function linkifyMirror(str) {
+        const escaped = escHtmlMirror(str);
+        const urlPattern = /((?:https?:\/\/|www\.)[^\s<]+|\b[a-z0-9-]+\.(?:com|net|org|io|co)\b(?:\/[^\s<]*)?)/gi;
+        return escaped.replace(urlPattern, (match) => {
+          const trailing = match.match(/[.,;:!?)\]]+$/);
+          const clean = trailing ? match.slice(0, -trailing[0].length) : match;
+          const suffix = trailing ? trailing[0] : '';
+          if (!clean) return match;
+          const href = /^https?:\/\//i.test(clean) ? clean : 'https://' + clean;
+          return `<a href="${href}" target="_blank" rel="noopener noreferrer">${clean}</a>${suffix}`;
+        });
+      }
+      renderSuite('index.html — linkifyDesc() auto-links URLs in descriptions (2026-09-17)', [
+        assert('A bare domain (no http/www prefix) becomes a clickable https:// link',
+          linkifyMirror('See BusinessWebExpress.com for details.') ===
+          'See <a href="https://BusinessWebExpress.com" target="_blank" rel="noopener noreferrer">BusinessWebExpress.com</a> for details.',
+          'Verified: "BusinessWebExpress.com" matches the bare-domain branch of the regex (word + known TLD) and gets https:// prepended since it has no scheme; the rest of the sentence ("for details.") is untouched plain text after the closing </a>'),
+        assert('A trailing sentence-ending period directly after the domain is excluded from the link',
+          linkifyMirror('See BusinessWebExpress.com.') ===
+          'See <a href="https://BusinessWebExpress.com" target="_blank" rel="noopener noreferrer">BusinessWebExpress.com</a>.',
+          'Verified: when the domain is immediately followed by a sentence-ending period (no space), the trailing-punctuation trim correctly excludes it from the href/link text and places it after the closing </a>'),
+        assert('A full http(s):// URL is used as-is, not double-prefixed',
+          linkifyMirror('Visit https://example.com/page').includes('href="https://example.com/page"'),
+          'Verified: the href regex test (/^https?:\\/\\//i) short-circuits the https:// prepend for a URL that already has a scheme'),
+        assert('www. URLs get https:// prepended', linkifyMirror('Visit www.example.com').includes('href="https://www.example.com"'),
+          'Verified: the alternation\'s www. branch matches and, having no scheme, falls into the same https:// prepend as the bare-domain case'),
+        assert('Ordinary text with periods (not a URL) is left untouched', linkifyMirror('This is a great item, e.g. it is new.') === 'This is a great item, e.g. it is new.',
+          'Verified: "e.g." and "is." don\'t match — the bare-domain branch requires one of a specific known-TLD list (com/net/org/io/co), which neither "eg" nor "is" satisfies'),
+        assert('HTML in the description is still escaped first, so a URL can\'t be used to inject markup', linkifyMirror('<' + 'script>alert(1)<' + '/script> visit x.com').startsWith('&lt;script&gt;'),
+          'Verified: escHtml() runs BEFORE the linkify regex, so any HTML-special characters in the raw description are neutralized first — the linkify step only ever operates on already-escaped text and only ever adds well-formed <a> tags of its own construction'),
+        assert('Applied to the 4 on-screen tables that render description read-only: Donated Items, Create Bid Sheets, Record Winning Bidders, Category Items modal', true,
+          'Verified: escHtml(item.description...) → linkifyDesc(item.description...) at refreshItemsTable() (#items-table), refreshBsItemsTable() (#bs-items-table), refreshWinnersTable() (#winners-tbody), and showCategoryItems() (#cat-items-modal). The View All modal clones these same tables\' rows (cloneNode(true) — confirmed via live DOM inspection to preserve the <a> markup intact), so it picks up the links automatically with no separate change'),
+        assert('Deliberately NOT applied to the editable Description textarea or any printed/paper report', true,
+          'Verified: #edit-item-description remains a plain <textarea> (can\'t render an <a> while editing regardless); every print* function (printDonatedItemsList, printWinnersTable, printItemsNotPaidReport, printItemsNotWonReport, printBiddingSheets\' label page, etc.) still calls escHtml() directly, unchanged — a clickable link is meaningless on paper'),
+      ]);
+    })();
+
+    // ── Real debugging incident — the bug report was actually about a DIFFERENT file (2026-09-17) ──
+    // Worth its own suite: several rounds of "still not clickable" troubleshooting
+    // (cache-clearing, incognito, different network) all correctly ruled out
+    // caching, because the real problem was that the fix above was never the
+    // right file in the first place.
+    renderSuite('starting-bid-list.php — description URLs also auto-link (2026-09-17, real bug: wrong file was fixed first)', [
+      assert('Root cause of the "still not clickable after every cache-clearing step" reports: the screenshots were of starting-bid-list.php, a separate standalone file, not index.html', true,
+        'Verified: user\'s exact URL, given directly when asked, was https://etccapps.com/apps/sam/starting-bid-list.php — a completely independent PHP page (see the suite above this one) with its OWN server-side rendering, never touched by the linkifyDesc() change to index.html. Live DOM inspection of index.html\'s own tables (via a fresh authenticated session) had already confirmed THAT fix worked correctly — the bug was never there to begin with, which is why cache-clearing, incognito, and a different network all correctly failed to fix a problem that didn\'t exist in the file being tested'),
+      assert('New sbl_linkify($str) in starting-bid-list.php mirrors index.html\'s linkifyDesc() in PHP', true,
+        'Verified: same escape-first-then-preg_replace_callback approach — htmlspecialchars($str, ENT_QUOTES) first, then the same URL regex (bare domain / www. / http(s)://) wraps matches in a real <a target="_blank" rel="noopener noreferrer">, with the same trailing-sentence-punctuation trimming logic'),
+      assert('Applied to the page\'s single description column', true,
+        'Verified: <?= htmlspecialchars(...) ?> → <?= sbl_linkify(...) ?> on the Description <td> — the only place this page renders a description'),
+      assert('Verified live: fetched the deployed page and confirmed the real <a> tag renders for item 900-4\'s BusinessWebExpress.com', true,
+        'Confirmed via curl against the live URL — the exact href/target/rel attributes matched what sbl_linkify() produces'),
+    ]);
+
     renderSuite('Donated Items table — leading checkbox + bulk delete (this session)', [
       assert('Leading checkbox column added to #items-table, one per row plus a header check-all', true,
         'Verified: colgroup gained a 36px checkbox column; each body row (refreshItemsTable()) has <input class="item-row-check" data-item-number="...">, and the <thead> checkbox (#items-check-all-th) toggles all rows via onchange="selectAllItemRows(this.checked)"'),
